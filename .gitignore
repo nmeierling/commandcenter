@@ -1,0 +1,13 @@
+# Build output
+agent/bin/
+web/dist/
+node_modules/
+
+# The embedded dashboard is a build artifact; `make build` regenerates it.
+# The directory itself must exist for go:embed, so the placeholder stays.
+agent/internal/webui/dist/*
+!agent/internal/webui/dist/.keep
+
+# Local state written by the agent at runtime
+*.log
+.DS_Store

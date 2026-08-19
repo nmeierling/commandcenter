@@ -1,0 +1,16 @@
+name: ecommerce
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "3000:80"
+  admin:
+    image: nginx:alpine
+    ports:
+      - "127.0.0.1:3010:80"
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: dev
+    ports:
+      - "${DB_PORT:-5432}:5432"

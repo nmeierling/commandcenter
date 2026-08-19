@@ -1,0 +1,32 @@
+# Development config: points the agent at the sample projects in this repo
+# instead of your real ones.
+#
+#   devcc --config fixtures/devcc.yaml
+#
+# Relative paths resolve against this file's directory, so they work from
+# wherever you run the agent.
+
+listen: 127.0.0.1:47123
+
+scan:
+  roots:
+    - ./projects
+  depth: 2
+
+poll:
+  interval: 2s
+  healthTimeout: 1s
+
+projects:
+  # Renames the discovered project and adds a health check, leaving the
+  # detected port and start command alone.
+  - name: API
+    path: ./projects/api
+    health:
+      url: http://127.0.0.1:4000/health
+
+  # The Go fixture binds a port nothing can detect statically, so it is
+  # declared here.
+  - name: Website
+    path: ./projects/website
+    ports: [4002]

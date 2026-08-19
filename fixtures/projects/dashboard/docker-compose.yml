@@ -1,0 +1,10 @@
+services:
+  ui:
+    image: nginx:alpine
+    ports:
+      - target: 80
+        published: "3001"
+        protocol: tcp
+  worker:
+    image: alpine:3
+    command: ["sleep", "3600"]

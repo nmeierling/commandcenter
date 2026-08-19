@@ -1,0 +1,77 @@
+# Development Command Center — project-local configuration.
+#
+# The agent picks this file up automatically when you run `devcc` from this
+# directory, ahead of your user config. Check `devcc config` if you are ever
+# unsure which file is in use.
+#
+# Every key is optional. Delete the file and the agent still works, scanning
+# ~/Projects, ~/dev, ~/src and similar.
+
+# ---------------------------------------------------------------------------
+# Which directories to scan. This is the setting you most likely want to edit.
+# ---------------------------------------------------------------------------
+scan:
+  roots:
+    - ~/Documents/private
+    - ~/Documents/mbti
+
+    # - ~/work
+    # - ~/src/github.com/acme
+    # Relative paths are resolved against this file, not your shell's cwd:
+    # - ./fixtures/projects
+
+  # How many directory levels below each root to search. depth: 1 means "the
+  # immediate children of each root". Scanning stops as soon as a directory is
+  # recognised as a project, so raising this does not pull in vendored code.
+  depth: 3
+
+  # Directory names to skip, added to the built-in list (node_modules, .git,
+  # vendor, dist, build, target, .next, .venv, coverage, …).
+  ignore:
+    - .archive
+
+  # Set to false to list only the projects declared below.
+  enabled: true
+
+# ---------------------------------------------------------------------------
+# Local API. Must be a loopback address.
+# ---------------------------------------------------------------------------
+listen: 127.0.0.1:47123
+
+# ---------------------------------------------------------------------------
+# Background refresh.
+# ---------------------------------------------------------------------------
+poll:
+  interval: 5s          # how often each project's status is refreshed
+  healthTimeout: 2s     # per health-check request
+  discoverEvery: 2m     # how often roots are re-scanned for new projects
+  startupSettleFor: 90s # health failures inside this window mean "starting"
+
+# ---------------------------------------------------------------------------
+# Per-project overrides. These are patches: set only what you want to change
+# and everything else stays as discovered. A path that discovery never reached
+# is added to the dashboard on its own.
+# ---------------------------------------------------------------------------
+projects: []
+  # - name: Ecommerce
+  #   path: ~/Projects/ecommerce
+  #   health:
+  #     url: http://localhost:3000/health
+  #
+  # - name: API
+  #   path: ~/Projects/api
+  #   start: npm run dev      # setting `start` puts a project under supervision
+  #   ports: [4000]
+  #   urls:
+  #     - http://localhost:4000/docs
+  #   env:
+  #     NODE_ENV: development
+  #
+  # - name: Legacy
+  #   path: ~/Projects/legacy
+  #   disabled: true          # hide it without deleting anything
+
+# Reading .devcc.yaml from inside individual project directories stays off by
+# default: such a file specifies commands this agent would execute, so honouring
+# it would make cloning an untrusted repo enough to get code execution.
+allowRepoConfig: false

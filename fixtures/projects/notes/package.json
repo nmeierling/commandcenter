@@ -1,0 +1,1 @@
+{ "name": "notes", "private": true, "scripts": { "build": "echo build" } }

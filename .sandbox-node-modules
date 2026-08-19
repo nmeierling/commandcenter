@@ -1,0 +1,10 @@
+# Nested node_modules directories the sandbox should overlay with its own
+# per-stack volume, one repo-relative directory per line.
+#
+# Without this, web/node_modules is shared with the macOS host, so whichever
+# platform installed last wins and the other one gets
+# "Cannot start service: Host version X does not match binary version Y"
+# from esbuild, or a missing @rollup/rollup-<platform> module.
+#
+# Requires relaunching the sandbox to take effect.
+web
