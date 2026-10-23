@@ -273,6 +273,33 @@ Naming a file explicitly with `composeFile:` in the config is the equivalent of
 `docker compose -f x`, which does not pull in a sibling either — so the agent
 does not add one in that case.
 
+## Categories and tabs
+
+Give a project one or more categories and each becomes a tab:
+
+```
+Inbox 1   All 3   Backend 1   team-a 2   team-x 1
+```
+
+**All** stays the unfiltered view, and **Inbox** collects the projects nothing
+has been filed under yet. Inbox only appears while something is uncategorised —
+an always-present empty tab is noise, and its disappearance is a useful signal. Categories are flat by design — a project can be in several,
+but a category never contains another, so there is no tree to navigate.
+
+Edit them on the card (the `+ category` chip), or write them by hand:
+
+```yaml
+projects:
+  - name: Checkout
+    path: ~/Projects/checkout
+    categories: [backend, team-a]
+```
+
+They live in the config file like every other decision the dashboard makes, so
+they survive a restart and can be committed. Labels are trimmed, de-duplicated
+case-insensitively and sorted, so tabs do not reshuffle when you add one. The
+tab bar only appears once something is categorised.
+
 ## Port conflicts
 
 Starting something whose port is taken does not fail and does not guess. The
@@ -491,6 +518,7 @@ Everything under `/api` requires the token.
 | `GET` | `/api/projects/{id}/units/{unit}/candidates` | running units elsewhere that could provide this one |
 | `GET` | `/api/projects/{id}/units/{unit}/options` | how this unit could run — the same payload a refused start returns, with `blocked: false` when nothing is actually in the way |
 | `POST` | `/api/projects/{id}/units/{unit}/substitute` | `{"target": "shop/db"}`, or `""` to unlink. Persisted to the config file. |
+| `POST` | `/api/projects/{id}/categories` | `{"categories": ["backend", "team-a"]}` — replaces the list, persisted to the config file |
 | `POST` | `/api/projects/{id}/start` \| `/stop` \| `/restart` | runs to completion; returns the updated project. Optional body: `{"stopOwners": true}`, `{"ports": {"3000": 3100}}`, `{"clearOverrides": true}`. With an empty body nothing is stopped and no port moves — a blocked start returns **409** with a `conflict` object describing the owners and a suggested free port. |
 | `GET` | `/api/projects/{id}/logs?tail=200` | snapshot; containers for compose projects, process output otherwise |
 | `GET` | `/api/projects/{id}/logs/stream` | SSE, one `line` event per log line |

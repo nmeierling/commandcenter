@@ -210,3 +210,44 @@ func TestWriterHandlesTheShippedTemplate(t *testing.T) {
 		t.Errorf("template comments lost:\n%s", out[:400])
 	}
 }
+
+func TestWriterRoundTripsCategories(t *testing.T) {
+	w, path := writerFor(t, handWritten)
+	if err := w.SetCategories("/work/dashboard", "Dashboard", []string{"frontend", "team-a"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range cfg.Projects {
+		if p.Path == "/work/dashboard" {
+			got = p.Categories
+		}
+	}
+	if len(got) != 2 || got[0] != "frontend" || got[1] != "team-a" {
+		t.Errorf("categories = %v", got)
+	}
+	if !strings.Contains(read(t, path), "# My dev setup.") {
+		t.Error("comments lost")
+	}
+
+	// Replacing rather than appending, and an empty list removes the key so the
+	// file does not accumulate `categories: []`.
+	if err := w.SetCategories("/work/dashboard", "Dashboard", []string{"backend"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ = Load(path)
+	for _, p := range cfg.Projects {
+		if p.Path == "/work/dashboard" && (len(p.Categories) != 1 || p.Categories[0] != "backend") {
+			t.Errorf("categories not replaced: %v", p.Categories)
+		}
+	}
+	if err := w.SetCategories("/work/dashboard", "Dashboard", nil); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(read(t, path), "categories") {
+		t.Errorf("empty list left behind:\n%s", read(t, path))
+	}
+}

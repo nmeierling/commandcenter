@@ -230,6 +230,8 @@ export interface Project {
   services?: string[]
   /** Checked-out git branch, or a short commit when detached. */
   branch?: string
+  /** Dashboard tabs this project appears under. */
+  categories: string[]
   state: State
 }
 
@@ -246,6 +248,8 @@ export interface AgentStatus {
   missingRoots?: string[]
   platform: string
   projectCount: number
+  /** Every category in use, in tab order. */
+  categories?: string[]
 }
 
 export interface LogLine {

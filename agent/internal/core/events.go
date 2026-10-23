@@ -42,6 +42,8 @@ type AgentStatus struct {
 	MissingRoots []string `json:"missingRoots,omitempty"`
 	Platform     string   `json:"platform"`
 	ProjectCount int      `json:"projectCount"`
+	// Categories are every category in use, in tab order.
+	Categories []string `json:"categories"`
 }
 
 // hub fans events out to connected clients.

@@ -167,6 +167,13 @@ export const api = {
       body: JSON.stringify({ target }),
     }),
 
+  /** Replace a project's categories; persisted to the config file. */
+  setCategories: (id: string, categories: string[]) =>
+    request<Project>(`/api/projects/${id}/categories`, {
+      method: 'POST',
+      body: JSON.stringify({ categories }),
+    }),
+
   open: (id: string, url?: string) =>
     request<{ opened: string }>(`/api/projects/${id}/open`, {
       method: 'POST',

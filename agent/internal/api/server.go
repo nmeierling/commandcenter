@@ -52,6 +52,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/projects/{id}/logs", s.getLogs)
 	api.HandleFunc("GET /api/projects/{id}/logs/stream", s.streamLogs)
 	api.HandleFunc("GET /api/projects/{id}/health", s.getHealth)
+	api.HandleFunc("POST /api/projects/{id}/categories", s.setCategories)
 	api.HandleFunc("POST /api/projects/{id}/open", s.openProject)
 	api.HandleFunc("POST /api/projects/{id}/ports/{port}/resolve", s.resolvePort)
 	api.HandleFunc("GET /api/events", s.streamEvents)
@@ -367,6 +368,28 @@ func (s *Server) getHealth(w http.ResponseWriter, r *http.Request) {
 		"url":        v.Health.URL,
 		"result":     v.State.Health,
 	})
+}
+
+// setCategories replaces a project's category list, persisting it to the
+// config file so the dashboard's tabs survive a restart.
+func (s *Server) setCategories(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Categories []string `json:"categories"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	v, err := s.mgr.SetCategories(r.Context(), r.PathValue("id"), body.Categories)
+	if err != nil {
+		if errors.Is(err, core.ErrUnknownProject) {
+			writeError(w, http.StatusNotFound, "unknown project")
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
 }
 
 func (s *Server) openProject(w http.ResponseWriter, r *http.Request) {

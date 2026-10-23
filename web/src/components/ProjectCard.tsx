@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api, ApiError, type ActionOptions } from '../api'
 import type { Port, PortConflict, Project, Unit } from '../types'
+import { CategoryEditor } from './CategoryEditor'
 import { LogPanel } from './LogPanel'
 import { ResolveDialog } from './ResolveDialog'
 import { UnitRow } from './UnitRow'
@@ -10,6 +11,8 @@ interface Props {
   canOpenBrowser: boolean
   /** False when this project's runtime cannot act right now (docker is down). */
   dockerReady: boolean
+  /** Every category in use, offered as completions when editing. */
+  knownCategories: string[]
   onUpdate: (p: Project) => void
   onNotice: (message: string, bad?: boolean) => void
 }
@@ -27,10 +30,12 @@ export function ProjectCard({
   project,
   canOpenBrowser,
   dockerReady,
+  knownCategories,
   onUpdate,
   onNotice,
 }: Props) {
   const [showLogs, setShowLogs] = useState(false)
+  const [editingCategories, setEditingCategories] = useState(false)
   const [pending, setPending] = useState<string | null>(null)
   const [dialog, setDialog] = useState<{
     conflict: PortConflict
@@ -170,6 +175,35 @@ export function ProjectCard({
           </span>
         )}
         <span className="sr-only">status: {st.status}</span>
+        <span className="card-categories">
+          {project.categories.map((c) => (
+            <span key={c} className="cat-chip">
+              {c}
+            </span>
+          ))}
+          <span className="cat-wrap">
+            <button
+              className="cat-add"
+              onClick={() => setEditingCategories((v) => !v)}
+              title="Add or edit categories"
+              aria-label="Edit categories"
+            >
+              {project.categories.length ? '⋯' : '+ category'}
+            </button>
+            {editingCategories && (
+              <CategoryEditor
+                current={project.categories}
+                known={knownCategories}
+                busy={busy}
+                onClose={() => setEditingCategories(false)}
+                onSave={(cats) => {
+                  setEditingCategories(false)
+                  void call(() => api.setCategories(project.id, cats), 'categories')
+                }}
+              />
+            )}
+          </span>
+        </span>
         <span className="card-summary">{summary(project)}</span>
       </div>
 

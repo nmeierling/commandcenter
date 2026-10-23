@@ -246,6 +246,9 @@ func applyOverrides(p *model.Project, cp config.Project) {
 	if len(cp.Env) > 0 {
 		p.Env = cp.Env
 	}
+	if len(cp.Categories) > 0 {
+		p.Categories = NormalizeCategories(cp.Categories)
+	}
 	if len(cp.Ports) > 0 {
 		p.Ports = nil
 		for _, port := range cp.Ports {
@@ -290,6 +293,9 @@ func normalize(v model.View) model.View {
 	}
 	if v.URLs == nil {
 		v.URLs = []string{}
+	}
+	if v.Categories == nil {
+		v.Categories = []string{}
 	}
 	if v.State.Ports == nil {
 		v.State.Ports = []model.Port{}
@@ -1217,6 +1223,7 @@ func (m *Manager) Status() AgentStatus {
 		MissingRoots:   m.cfg.MissingRoots(),
 		Platform:       runtime.GOOS + "/" + runtime.GOARCH,
 		ProjectCount:   count,
+		Categories:     m.Categories(),
 	}
 	if dockerErr != nil {
 		st.DockerError = dockerErr.Error()

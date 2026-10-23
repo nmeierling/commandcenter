@@ -79,6 +79,10 @@ type Project struct {
 	// reviewable and shareable with the rest of the team.
 	PortOverrides map[int]int `yaml:"portOverrides,omitempty"`
 
+	// Categories group projects into dashboard tabs. Flat by design: a project
+	// can be in several, but a category never contains another.
+	Categories []string `yaml:"categories,omitempty"`
+
 	// Substitutes marks a unit as already provided by something else that is
 	// running: "db: ecommerce/db" means this project's `db` service should not
 	// be started, because ecommerce's `db` satisfies it. The value is

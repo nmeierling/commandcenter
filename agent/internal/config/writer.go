@@ -87,6 +87,30 @@ func (w *Writer) SetSubstitute(projectPath, projectName, unit, target string) er
 	})
 }
 
+// SetCategories replaces a project's category list. An empty list removes the
+// key rather than leaving `categories: []` behind.
+func (w *Writer) SetCategories(projectPath, projectName string, categories []string) error {
+	return w.edit(projectPath, projectName, func(entry *yaml.Node) {
+		if len(categories) == 0 {
+			removeKey(entry, "categories")
+			return
+		}
+		seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Style: yaml.FlowStyle}
+		for _, c := range categories {
+			seq.Content = append(seq.Content,
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: c})
+		}
+		if existing := mapValue(entry, "categories"); existing != nil {
+			*existing = *seq
+			return
+		}
+		entry.Content = append(entry.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "categories",
+				HeadComment: "Dashboard tabs this project appears under."},
+			seq)
+	})
+}
+
 // edit loads the file, hands the project's entry to fn, and writes it back
 // atomically.
 func (w *Writer) edit(projectPath, projectName string, fn func(entry *yaml.Node)) error {

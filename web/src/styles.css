@@ -1091,3 +1091,127 @@ button.uport:hover {
     0 0 7px color-mix(in srgb, var(--accent) 70%, transparent);
 }
 
+/* ---------- category tabs ---------- */
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  margin: 0 0 16px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 7px 12px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.tab:hover:not(:disabled) {
+  background: transparent;
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  font-weight: 550;
+}
+
+.tab-count {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--faint);
+}
+
+/* ---------- category chips on a card ---------- */
+
+.card-categories {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.cat-chip {
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: var(--panel);
+  white-space: nowrap;
+}
+
+.cat-add {
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px dashed var(--border-strong);
+  background: transparent;
+  color: var(--faint);
+  line-height: 1.5;
+}
+
+.cat-add:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: transparent;
+}
+
+.cat-editor {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  width: 300px;
+  padding: 11px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  text-align: left;
+}
+
+.cat-editor label {
+  display: block;
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.cat-editor input {
+  width: 100%;
+  min-width: 0;
+}
+
+.cat-editor .hint {
+  font-size: 11px;
+  color: var(--faint);
+  margin: 7px 0 0;
+  line-height: 1.45;
+}
+
+.cat-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.cat-wrap {
+  position: relative;
+  display: inline-flex;
+}
+

@@ -12,6 +12,9 @@ export function App() {
   const { projects, agent, connected, unauthorized, loaded, rescan, upsert } =
     useProjects()
   const [query, setQuery] = useState('')
+  // 'all' is the unfiltered view, 'inbox' the projects nobody has filed yet,
+  // and anything else is a category.
+  const [tab, setTab] = useState('all')
   const [filter, setFilter] = useState<Filter>('all')
   const [toast, setToast] = useState<{ text: string; bad: boolean } | null>(null)
   const [rescanning, setRescanning] = useState(false)
@@ -24,9 +27,45 @@ export function App() {
 
   const notice = (text: string, bad = false) => setToast({ text, bad })
 
+  // Every category in use, in a stable order. Derived from the projects rather
+  // than from agent status so a tab appears the moment one is added, without
+  // waiting for the next status poll.
+  const categories = useMemo(() => {
+    const seen = new Map<string, string>()
+    for (const p of projects) {
+      for (const c of p.categories ?? []) {
+        if (!seen.has(c.toLowerCase())) seen.set(c.toLowerCase(), c)
+      }
+    }
+    return [...seen.values()].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
+  }, [projects])
+
+  const uncategorised = useMemo(
+    () => projects.filter((p) => (p.categories ?? []).length === 0),
+    [projects],
+  )
+
+  // A tab whose last project was filed — or whose category no longer exists —
+  // would otherwise strand the view on an empty list with no way back.
+  useEffect(() => {
+    const gone =
+      (tab === 'inbox' && uncategorised.length === 0) ||
+      (tab !== 'all' &&
+        tab !== 'inbox' &&
+        !categories.some((c) => c.toLowerCase() === tab.toLowerCase()))
+    if (gone) setTab('all')
+  }, [categories, uncategorised.length, tab])
+
+  const inTab = (p: Project) => {
+    if (tab === 'all') return true
+    if (tab === 'inbox') return (p.categories ?? []).length === 0
+    return (p.categories ?? []).some((c) => c.toLowerCase() === tab.toLowerCase())
+  }
+
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
     return projects.filter((p) => {
+      if (!inTab(p)) return false
       if (q && !`${p.name} ${p.path} ${p.kind}`.toLowerCase().includes(q)) {
         return false
       }
@@ -41,7 +80,7 @@ export function App() {
           return true
       }
     })
-  }, [projects, query, filter])
+  }, [projects, query, filter, tab, uncategorised.length])
 
   if (unauthorized) return <TokenGate />
 
@@ -94,6 +133,48 @@ export function App() {
           <span className="chip warn">no browser opener on this machine</span>
         )}
       </div>
+
+      {categories.length > 0 && (
+        <nav className="tabs" role="tablist" aria-label="Project categories">
+          {/* Nothing to triage means no Inbox: an always-present empty tab is
+              noise, and its disappearance is a useful signal in itself. */}
+          {uncategorised.length > 0 && (
+            <button
+              role="tab"
+              aria-selected={tab === 'inbox'}
+              className={`tab${tab === 'inbox' ? ' active' : ''}`}
+              onClick={() => setTab('inbox')}
+              title="Projects that have no category yet"
+            >
+              Inbox<span className="tab-count">{uncategorised.length}</span>
+            </button>
+          )}
+          <button
+            role="tab"
+            aria-selected={tab === 'all'}
+            className={`tab${tab === 'all' ? ' active' : ''}`}
+            onClick={() => setTab('all')}
+          >
+            All<span className="tab-count">{projects.length}</span>
+          </button>
+          {categories.map((c) => {
+            const n = projects.filter((p) =>
+              (p.categories ?? []).some((x) => x.toLowerCase() === c.toLowerCase()),
+            ).length
+            return (
+              <button
+                key={c}
+                role="tab"
+                aria-selected={tab === c}
+                className={`tab${tab === c ? ' active' : ''}`}
+                onClick={() => setTab(c)}
+              >
+                {c}<span className="tab-count">{n}</span>
+              </button>
+            )
+          })}
+        </nav>
+      )}
 
       <div className="toolbar">
         <input
@@ -157,7 +238,13 @@ export function App() {
         ) : null}
 
         {loaded && projects.length > 0 && visible.length === 0 && (
-          <div className="empty-state">No projects match this filter.</div>
+          <div className="empty-state">
+            {tab === 'all'
+              ? 'No projects match this filter.'
+              : tab === 'inbox'
+                ? 'Nothing uncategorised matches this filter.'
+                : `Nothing in “${tab}” matches this filter.`}
+          </div>
         )}
 
         {visible.map((p) => (
@@ -166,6 +253,7 @@ export function App() {
             project={p}
             canOpenBrowser={agent?.canOpenBrowser ?? true}
             dockerReady={agent?.daemonOk ?? true}
+            knownCategories={categories}
             onUpdate={upsert}
             onNotice={notice}
           />
