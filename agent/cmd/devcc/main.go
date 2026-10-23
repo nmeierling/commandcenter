@@ -156,7 +156,15 @@ func run(args []string) error {
 func printBanner(cfg config.Config, mgr *core.Manager, dashURL string, f *flags) {
 	st := mgr.Status()
 	fmt.Printf("Development Command Center agent %s (%s)\n", core.Version, st.Platform)
-	fmt.Printf("  dashboard   %s\n", dashURL)
+	if dev := splitCSV(f.devOrigins); len(dev) > 0 {
+		// In dev the embedded bundle is whatever `make build` last produced: no
+		// Vite client, so no hot reload. Printing the agent's URL first is how
+		// you end up editing files and watching nothing happen.
+		fmt.Printf("  dashboard   %s   <- open this, it hot reloads\n", dev[0])
+		fmt.Printf("  (embedded)  %s   last built bundle, no hot reload\n", dashURL)
+	} else {
+		fmt.Printf("  dashboard   %s\n", dashURL)
+	}
 	if cfg.Path() != "" {
 		fmt.Printf("  config      %s\n", cfg.Path())
 	} else {

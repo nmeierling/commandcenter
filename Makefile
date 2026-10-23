@@ -35,7 +35,9 @@ agent:
 	@mkdir -p $(EMBED_DIR)
 	@# go:embed fails on an empty directory, so keep the placeholder present.
 	@[ -n "$$(ls -A $(EMBED_DIR))" ] || echo placeholder > $(EMBED_DIR)/.keep
-	cd $(AGENT_DIR) && $(GO) build -trimpath -ldflags "-s -w" -o bin/devcc ./cmd/devcc
+	@# Honour a BIN override, so building elsewhere does not overwrite the
+	@# binary already in agent/bin.
+	$(GO) -C $(AGENT_DIR) build -trimpath -ldflags "-s -w" -o $(abspath $(BIN)) ./cmd/devcc
 	@echo "built $(BIN)"
 
 .PHONY: install
@@ -49,13 +51,24 @@ run: build
 
 ## dev runs the agent with the Vite dev server allowed as an origin. Vite
 ## proxies /api and injects the token, so the browser never holds it in dev.
+##
+## Open the Vite URL, not the agent's. The agent serves the *embedded* bundle
+## from the last `make build`, which has no Vite client and therefore no hot
+## reload — edits appear to do nothing.
 .PHONY: dev
 dev: agent
-	@echo "agent  -> http://127.0.0.1:47123"
-	@echo "web ui -> http://localhost:5173"
-	$(BIN) --dev-origin http://localhost:5173 & \
-	trap 'kill %1 2>/dev/null' EXIT; \
-	cd $(WEB_DIR) && npm run dev
+	@# Create the token before Vite starts: it reads the file to authenticate
+	@# its proxy, and would otherwise race the agent on a first run.
+	@$(BIN) token >/dev/null
+	@echo ""
+	@echo "  ==> open  http://localhost:5173   (hot reload)"
+	@echo "      the agent's own http://127.0.0.1:47123 serves the last built"
+	@echo "      bundle and does not hot reload"
+	@echo ""
+	@$(BIN) --dev-origin http://localhost:5173 & \
+	  agent=$$!; \
+	  trap "kill $$agent 2>/dev/null" EXIT INT TERM; \
+	  cd $(WEB_DIR) && npm run dev
 
 .PHONY: test
 test:

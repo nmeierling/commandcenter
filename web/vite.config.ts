@@ -4,6 +4,15 @@ import { join } from 'node:path'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
+function stateDir(): string {
+  return (
+    process.env.DEVCC_STATE_DIR ??
+    (process.platform === 'darwin'
+      ? join(homedir(), 'Library', 'Caches', 'devcc')
+      : join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'devcc'))
+  )
+}
+
 /**
  * Reads the agent's API token from disk.
  *
@@ -11,15 +20,15 @@ import { defineConfig } from 'vite'
  * the Authorization header here, in Node. That keeps the dev setup identical to
  * production from the app's point of view, without weakening the agent's auth
  * for the sake of convenience.
+ *
+ * Read per request, not once at startup. Vite and the agent start together, so
+ * reading it once meant losing a race on a first run and proxying every call
+ * unauthenticated for the rest of the session — which looks like a broken app,
+ * not like a startup ordering problem.
  */
 function agentToken(): string | null {
-  const stateDir =
-    process.env.DEVCC_STATE_DIR ??
-    (process.platform === 'darwin'
-      ? join(homedir(), 'Library', 'Caches', 'devcc')
-      : join(process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'), 'devcc'))
   try {
-    return readFileSync(join(stateDir, 'token'), 'utf8').trim()
+    return readFileSync(join(stateDir(), 'token'), 'utf8').trim()
   } catch {
     return null
   }
@@ -28,12 +37,12 @@ function agentToken(): string | null {
 const AGENT = process.env.DEVCC_AGENT ?? 'http://127.0.0.1:47123'
 
 export default defineConfig(() => {
-  const token = agentToken()
-  if (!token) {
+  if (!agentToken()) {
     console.warn(
-      '[devcc] no agent token found — start the agent first, or set DEVCC_STATE_DIR.',
+      `[devcc] no agent token in ${stateDir()} yet — it will be picked up as soon as the agent creates one.`,
     )
   }
+  let warned = false
 
   return {
     plugins: [react()],
@@ -47,7 +56,13 @@ export default defineConfig(() => {
           // SSE must not be buffered by the dev proxy.
           configure: (proxy) => {
             proxy.on('proxyReq', (proxyReq) => {
-              if (token) proxyReq.setHeader('Authorization', `Bearer ${token}`)
+              const token = agentToken()
+              if (token) {
+                proxyReq.setHeader('Authorization', `Bearer ${token}`)
+              } else if (!warned) {
+                warned = true
+                console.warn('[devcc] proxying without a token — is the agent running?')
+              }
               // The agent only accepts origins it knows; present its own.
               proxyReq.setHeader('Origin', AGENT)
             })

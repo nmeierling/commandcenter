@@ -530,8 +530,15 @@ at while developing:
 devcc --config fixtures/devcc.yaml
 ```
 
+**Open `http://localhost:5173`, not the agent's own URL.** The agent serves the
+bundle embedded at the last `make build`, which has no Vite client and therefore
+no hot reload — editing files against it looks like nothing happening. `make dev`
+and the agent's startup banner both point at the Vite URL for this reason.
+
 In dev, Vite proxies `/api` to the agent and injects the token in Node, so the
-browser never holds it and the agent's auth is not weakened for convenience.
+browser never holds it and the agent's auth is not weakened for convenience. The
+token is read per request rather than once at startup, so it does not matter
+whether Vite or the agent wins the race on a first run.
 
 If you build the UI from more than one platform against the same checkout (a
 macOS host and a Linux container, say), `web/node_modules` ends up holding one
