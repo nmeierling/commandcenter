@@ -36,6 +36,7 @@ export function ProjectCard({
 }: Props) {
   const [showLogs, setShowLogs] = useState(false)
   const [editingCategories, setEditingCategories] = useState(false)
+  const [copied, setCopied] = useState(false)
   const [pending, setPending] = useState<string | null>(null)
   const [dialog, setDialog] = useState<{
     conflict: PortConflict
@@ -135,6 +136,22 @@ export function ProjectCard({
     }
   }
 
+  const copyPath = async () => {
+    try {
+      // Available on localhost, which is a secure context; the fallback covers
+      // the agent being reached by some other hostname.
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(project.path)
+      } else {
+        legacyCopy(project.path)
+      }
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    } catch {
+      onNotice(`Could not copy. The path is ${project.path}`, true)
+    }
+  }
+
   const open = async (url?: string) => {
     try {
       const res = await api.open(project.id, url)
@@ -212,6 +229,14 @@ export function ProjectCard({
         <span className="card-path" title={project.path}>
           {shortenPath(project.path)}
         </span>
+        <button
+          className="copy-path"
+          onClick={copyPath}
+          title={`Copy ${project.path}`}
+          aria-label="Copy the full project path"
+        >
+          {copied ? '✓ copied' : 'copy path'}
+        </button>
       </div>
 
       {st.error && (
@@ -308,6 +333,20 @@ function statusLine(p: Project): string {
     default:
       return st.status
   }
+}
+
+// Clipboard fallback for a non-secure context, where navigator.clipboard is
+// undefined and the only route is a throwaway selection.
+function legacyCopy(text: string) {
+  const el = document.createElement('textarea')
+  el.value = text
+  el.setAttribute('readonly', '')
+  el.style.position = 'fixed'
+  el.style.opacity = '0'
+  document.body.appendChild(el)
+  el.select()
+  document.execCommand('copy')
+  document.body.removeChild(el)
 }
 
 function shortenPath(path: string): string {

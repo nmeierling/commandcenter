@@ -1215,3 +1215,32 @@ button.uport:hover {
   display: inline-flex;
 }
 
+/* ---------- copy path ---------- */
+
+.copy-path {
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+
+.card:hover .copy-path,
+.copy-path:focus-visible {
+  opacity: 1;
+}
+
+.copy-path:hover:not(:disabled) {
+  color: var(--accent);
+  background: transparent;
+  border-color: transparent;
+}
+
+@media (hover: none) {
+  .copy-path {
+    opacity: 1;
+  }
+}

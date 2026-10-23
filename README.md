@@ -300,6 +300,9 @@ they survive a restart and can be committed. Labels are trimmed, de-duplicated
 case-insensitively and sorted, so tabs do not reshuffle when you add one. The
 tab bar only appears once something is categorised.
 
+Each card also has a **copy path** control for the fully qualified project
+directory — the thing you want when switching to a terminal.
+
 ## Port conflicts
 
 Starting something whose port is taken does not fail and does not guess. The
