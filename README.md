@@ -62,10 +62,21 @@ Config is resolved in this order:
 | --- | --- | --- |
 | 1 | `$DEVCC_CONFIG` | scripts, CI, temporarily pointing somewhere else |
 | 2 | `./devcc.yaml` or `./devcc.yml` | a project-local config, checked in next to your repos |
-| 3 | `~/.config/devcc/config.yaml` (macOS: `~/Library/Application Support/devcc/config.yaml`) | your everyday personal setup |
+| 3 | `~/.devcc/devcc.yaml` | your everyday personal setup |
+| 4 | `~/.config/devcc/config.yaml` (macOS: `~/Library/Application Support/devcc/config.yaml`) | an older install; still read when it is there |
 
-`--config <path>` overrides all three. `devcc init` writes the per-user file;
-`devcc init devcc.yaml` writes a local one.
+`--config <path>` overrides all four. `devcc init` writes
+`~/.devcc/devcc.yaml`; `devcc init devcc.yaml` writes a local one.
+
+`~/.devcc/devcc.yaml` is a visible path on purpose. It is the file you edit and
+the file the agent writes your port overrides, substitutes and categories back
+into, so hiding it in an application-support directory only makes it harder to
+find, diff and copy between machines.
+
+The `devcc.yaml` in this repository is a **sample** — it scans
+`fixtures/projects` and nothing else. `make run` and `make dev` therefore load
+`~/.devcc/devcc.yaml` when it exists, rather than the checked-in sample that a
+working directory would otherwise win with.
 
 Relative paths inside a config file resolve against **that file's directory**,
 not your shell's working directory, so `./projects` means the same thing however
@@ -448,7 +459,7 @@ Related decisions:
 ## Configuration reference
 
 Everything is optional. See [`devcc.yaml`](devcc.yaml) for a commented copy, or
-run `devcc init` to write one to your user config directory.
+run `devcc init` to write one to `~/.devcc/devcc.yaml`.
 
 ```yaml
 listen: 127.0.0.1:47123

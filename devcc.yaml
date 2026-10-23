@@ -1,8 +1,13 @@
 # Development Command Center — project-local configuration.
 #
+# This is the repository's own sample: it scans fixtures/projects, so `devcc`
+# run from this directory has something to show. Your real setup belongs in
+# ~/.devcc/devcc.yaml, which is what `devcc init`, `make run` and `make dev`
+# use — a file in the working directory otherwise wins over it.
+#
 # The agent picks this file up automatically when you run `devcc` from this
-# directory, ahead of your user config. Check `devcc config` if you are ever
-# unsure which file is in use.
+# directory, ahead of your personal config. Check `devcc config` if you are
+# ever unsure which file is in use.
 #
 # Every key is optional. Delete the file and the agent still works, scanning
 # ~/Projects, ~/dev, ~/src and similar.

@@ -138,11 +138,47 @@ func defaultRoots() []string {
 // LocalNames are config files looked for in the working directory.
 var LocalNames = []string{"devcc.yaml", "devcc.yml"}
 
+// HomeDir is the directory a personal config lives in, under $HOME.
+const HomeDir = ".devcc"
+
+// HomePath is the personal config file, ~/.devcc/devcc.yaml.
+//
+// A visible, memorable path rather than the platform's application-support
+// directory, because this is a file you are expected to open: it is both the
+// thing you hand-edit and the thing the agent writes port overrides and
+// substitutes back into.
+func HomePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, HomeDir, LocalNames[0])
+}
+
+// homeConfig returns an existing ~/.devcc/devcc.y{a,}ml, or "".
+func homeConfig() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	for _, name := range LocalNames {
+		p := filepath.Join(home, HomeDir, name)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	return ""
+}
+
 // DefaultPath resolves which config file to load, in order:
 //
 //  1. $DEVCC_CONFIG
 //  2. ./devcc.yaml or ./devcc.yml in the working directory
-//  3. the per-user config file
+//  3. ~/.devcc/devcc.yaml
+//  4. the platform per-user config, when one is already there
+//
+// With none of them present the answer is ~/.devcc/devcc.yaml, which is then
+// the file `devcc init` creates and the agent writes choices to.
 //
 // The working-directory entry is what makes a project-local config work: keep a
 // devcc.yaml next to your repos, run `devcc` there, and that file wins without
@@ -160,6 +196,19 @@ func DefaultPath() string {
 			}
 			return name
 		}
+	}
+	if p := homeConfig(); p != "" {
+		return p
+	}
+	// Only when it exists: an older install keeps working, but a fresh one is
+	// not sent to ~/Library/Application Support to edit its config.
+	if p := UserPath(); p != "" {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	if p := HomePath(); p != "" {
+		return p
 	}
 	return UserPath()
 }

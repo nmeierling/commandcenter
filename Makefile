@@ -45,6 +45,12 @@ install: build
 	install -m 0755 $(BIN) $(HOME)/.local/bin/devcc
 	@echo "installed to $(HOME)/.local/bin/devcc"
 
+## Your personal config is ~/.devcc/devcc.yaml. Running from this checkout
+## would otherwise pick up the sample devcc.yaml in the repo root, which only
+## scans fixtures/projects. Pass DEVCC_CONFIG=... to override.
+DEVCC_CONFIG ?= $(firstword $(wildcard $(HOME)/.devcc/devcc.yaml $(HOME)/.devcc/devcc.yml))
+run dev: export DEVCC_CONFIG := $(DEVCC_CONFIG)
+
 .PHONY: run
 run: build
 	$(BIN) --open
@@ -62,6 +68,7 @@ dev: agent
 	@$(BIN) token >/dev/null
 	@echo ""
 	@echo "  ==> open  http://localhost:5173   (hot reload)"
+	@echo "      config  $(or $(DEVCC_CONFIG),./devcc.yaml)"
 	@echo "      the agent's own http://127.0.0.1:47123 serves the last built"
 	@echo "      bundle and does not hot reload"
 	@echo ""

@@ -65,15 +65,28 @@ func TestIgnoreListIsAdditive(t *testing.T) {
 
 func TestDefaultPathPrefersWorkingDirectory(t *testing.T) {
 	dir := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	t.Chdir(dir)
 
-	// With nothing local, the per-user file is used.
-	if got := DefaultPath(); got != UserPath() {
-		t.Errorf("DefaultPath = %q, want the user config %q", got, UserPath())
+	// With nothing anywhere, the answer is the file to create.
+	if got := DefaultPath(); got != HomePath() {
+		t.Errorf("DefaultPath = %q, want %q", got, HomePath())
 	}
 
-	// A devcc.yaml in the working directory wins, so `cd myrepo && devcc`
-	// needs no flags.
+	// An existing ~/.devcc/devcc.yaml is the personal config.
+	if err := os.MkdirAll(filepath.Join(home, HomeDir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(HomePath(), []byte("scan:\n  depth: 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := DefaultPath(); got != HomePath() {
+		t.Errorf("DefaultPath = %q, want the home config %q", got, HomePath())
+	}
+
+	// A devcc.yaml in the working directory wins over it, so
+	// `cd myrepo && devcc` needs no flags.
 	local := filepath.Join(dir, "devcc.yaml")
 	if err := os.WriteFile(local, []byte("scan:\n  depth: 1\n"), 0o600); err != nil {
 		t.Fatal(err)

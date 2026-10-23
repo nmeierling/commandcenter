@@ -246,7 +246,8 @@ func runSubcommand(name string, args []string) error {
 		}
 		if cfg.Path() == "" {
 			fmt.Printf("no config file found; using built-in defaults\n")
-			fmt.Printf("searched: $DEVCC_CONFIG, ./devcc.yaml, ./devcc.yml, %s\n", config.UserPath())
+			fmt.Printf("searched: $DEVCC_CONFIG, ./devcc.yaml, ./devcc.yml, %s, %s\n",
+				config.HomePath(), config.UserPath())
 		} else {
 			fmt.Println(cfg.Path())
 		}
@@ -273,7 +274,9 @@ func runSubcommand(name string, args []string) error {
 		return nil
 
 	case "init":
-		path := config.UserPath()
+		// ~/.devcc/devcc.yaml rather than the platform's application-support
+		// directory: this file is meant to be edited.
+		path := config.HomePath()
 		if len(args) > 0 {
 			path = args[0]
 		}
