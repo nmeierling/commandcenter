@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -31,10 +32,36 @@ func Find(dir string) string {
 	return ""
 }
 
+// Service is one service declared in a compose file, whether or not it has
+// ever been created. Listing declared services is what lets the dashboard show
+// a project's shape before it has been started for the first time.
+type Service struct {
+	Name  string
+	Ports []PublishedPort
+}
+
+// AllPorts flattens the ports of every service, in host-port order.
+func AllPorts(services []Service) []PublishedPort {
+	var out []PublishedPort
+	for _, svc := range services {
+		out = append(out, svc.Ports...)
+	}
+	sortPorts(out)
+	return out
+}
+
 // PublishedPort is a host port published by a compose service.
 type PublishedPort struct {
 	Host    int
 	Service string
+	// Variable is the environment variable the compose file uses to declare
+	// this port, as in "${WEB_PORT:-3000}:80". When set, the port can be moved
+	// by setting that variable — no file edits, no override files. When empty
+	// the port is hard-coded and there is no clean way to change it.
+	Variable string
+	// Container is the port inside the container this maps to. Moving a
+	// published port changes only the host side of that pair.
+	Container int
 }
 
 type composeDoc struct {
@@ -58,7 +85,7 @@ type longPort struct {
 // host-IP prefixes. Anything we cannot resolve statically is skipped rather
 // than guessed, because a wrong port number in the UI is worse than a missing
 // one — we also learn the real ports from `docker compose ps` once running.
-func Parse(path string) (name string, ports []PublishedPort, err error) {
+func Parse(path string) (name string, services []Service, err error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return "", nil, err
@@ -70,20 +97,35 @@ func Parse(path string) (name string, ports []PublishedPort, err error) {
 
 	env := dotEnv(filepath.Dir(path))
 	seen := map[int]bool{}
-	for svc, s := range doc.Services {
+
+	names := make([]string, 0, len(doc.Services))
+	for svc := range doc.Services {
+		names = append(names, svc)
+	}
+	// Map iteration order is random; sort so the UI does not reshuffle.
+	sort.Strings(names)
+
+	for _, svc := range names {
+		s := doc.Services[svc]
+		service := Service{Name: svc}
 		for i := range s.Ports {
-			for _, hp := range hostPorts(&s.Ports[i], env) {
+			resolved, target, variable := hostPorts(&s.Ports[i], env)
+			for _, hp := range resolved {
 				if hp <= 0 || hp > 65535 || seen[hp] {
 					continue
 				}
 				seen[hp] = true
-				ports = append(ports, PublishedPort{Host: hp, Service: svc})
+				service.Ports = append(service.Ports, PublishedPort{
+					Host: hp, Service: svc, Variable: variable, Container: target,
+				})
 			}
 		}
+		sortPorts(service.Ports)
+		// A service with no published ports still belongs on the dashboard;
+		// "worker has no ports" is information, not a reason to hide it.
+		services = append(services, service)
 	}
-	// Map iteration order is random; sort so the UI does not reshuffle.
-	sortPorts(ports)
-	return doc.Name, ports, nil
+	return doc.Name, services, nil
 }
 
 func sortPorts(ps []PublishedPort) {
@@ -94,22 +136,33 @@ func sortPorts(ps []PublishedPort) {
 	}
 }
 
-func hostPorts(n *yaml.Node, env map[string]string) []int {
+// hostPorts resolves an entry to its host ports and the container port behind
+// them, and reports the environment variable that produced the host side if the
+// entry was written with one.
+func hostPorts(n *yaml.Node, env map[string]string) (hosts []int, target int, variable string) {
 	switch n.Kind {
 	case yaml.ScalarNode:
-		return parseShort(interpolate(n.Value, env))
+		resolved, v := interpolate(n.Value, env)
+		hosts, target = parseShort(resolved)
+		return hosts, target, v
 	case yaml.MappingNode:
 		var lp longPort
 		if err := n.Decode(&lp); err != nil {
-			return nil
+			return nil, 0, ""
 		}
 		// A long-form entry without `published` publishes nothing on the host.
 		if lp.Published == nil {
-			return nil
+			return nil, 0, ""
 		}
-		return parseRange(interpolate(scalarString(lp.Published), env))
+		resolved, v := interpolate(scalarString(lp.Published), env)
+		targetResolved, _ := interpolate(scalarString(lp.Target), env)
+		t := 0
+		if ts := parseRange(targetResolved); len(ts) > 0 {
+			t = ts[0]
+		}
+		return parseRange(resolved), t, v
 	}
-	return nil
+	return nil, 0, ""
 }
 
 func scalarString(v any) string {
@@ -132,10 +185,10 @@ func scalarString(v any) string {
 //	"127.0.0.1:8001:8001"   -> host 8001
 //	"8000-8005:80"          -> hosts 8000..8005
 //	"6060:6060/udp"         -> host 6060
-func parseShort(s string) []int {
+func parseShort(s string) (hosts []int, target int) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return nil
+		return nil, 0
 	}
 	if i := strings.Index(s, "/"); i >= 0 { // strip /tcp, /udp
 		s = s[:i]
@@ -145,18 +198,25 @@ func parseShort(s string) []int {
 	case 1:
 		// Container port only: docker picks a random host port, so there is no
 		// stable host port to report.
-		return nil
+		return nil, 0
 	case 2:
-		return parseRange(parts[0])
+		return parseRange(parts[0]), firstOf(parseRange(parts[1]))
 	case 3:
-		return parseRange(parts[1])
+		return parseRange(parts[1]), firstOf(parseRange(parts[2]))
 	default:
 		// IPv6 host addresses use brackets, e.g. "[::1]:8080:80".
 		if i := strings.LastIndex(s, "]"); i >= 0 && i+1 < len(s) {
 			return parseShort(s[i+2:])
 		}
-		return nil
+		return nil, 0
 	}
+}
+
+func firstOf(ps []int) int {
+	if len(ps) == 0 {
+		return 0
+	}
+	return ps[0]
 }
 
 func parseRange(s string) []int {
@@ -187,16 +247,21 @@ var varRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}|\$
 
 // interpolate resolves ${VAR}, ${VAR:-default} and $VAR using the project's
 // .env file and the agent's own environment, matching compose's precedence
-// (shell environment wins over .env).
-func interpolate(s string, env map[string]string) string {
+// (shell environment wins over .env). It also returns the first variable name
+// it substituted, which is what tells us the port is movable.
+func interpolate(s string, env map[string]string) (string, string) {
 	if !strings.Contains(s, "$") {
-		return s
+		return s, ""
 	}
-	return varRe.ReplaceAllStringFunc(s, func(m string) string {
+	var firstVar string
+	out := varRe.ReplaceAllStringFunc(s, func(m string) string {
 		g := varRe.FindStringSubmatch(m)
 		name, def := g[1], g[2]
 		if name == "" {
 			name = g[3]
+		}
+		if firstVar == "" {
+			firstVar = name
 		}
 		if v, ok := os.LookupEnv(name); ok && v != "" {
 			return v
@@ -206,6 +271,7 @@ func interpolate(s string, env map[string]string) string {
 		}
 		return def
 	})
+	return out, firstVar
 }
 
 // dotEnv reads a project's .env file. Errors are ignored: a missing or

@@ -71,6 +71,18 @@ Relative paths inside a config file resolve against **that file's directory**,
 not your shell's working directory, so `./projects` means the same thing however
 you launch the agent.
 
+### The agent writes to this file
+
+Resolving a port conflict writes `portOverrides` or `substitutes` into the
+project's entry, creating the entry if it does not exist yet. Those choices
+belong somewhere you can read, review and commit — not in hidden agent state.
+
+Editing is surgical: the file is round-tripped through the YAML node tree rather
+than re-marshalled from a struct, so **your comments, key order, flow style and
+2-space indentation all survive**, and keys the agent does not understand are
+left untouched. Writes go to a temporary file and are renamed into place, so an
+interrupted write cannot truncate your config.
+
 Because a `devcc.yaml` can specify `start:` commands the agent will run, running
 `devcc` inside a directory you did not write means trusting its config — the same
 way running `make` there means trusting its Makefile. The startup banner always
@@ -143,20 +155,212 @@ For each port the dashboard shows whether it is free, **owned by this project**,
 or **held by something else** — and in the last case, what: a PID and command
 name, or a container and its compose project.
 
+## Every project is a list of rows
+
+Each card lists one row per **unit** — a compose service, or the single
+supervised app of a non-Docker project — regardless of state:
+
+```
+ecommerce        docker compose                        4/4 containers running
+  ● admin    Up 2 minutes                    3010→80    [Open] [Kill]
+  ● db       Up 2 minutes · healthy        5432→5432           [Kill]
+  ● web      Up 2 minutes · healthy          3000→80    [Open] [Kill]
+  ● worker   Up 2 minutes                    no ports          [Kill]
+  [ Restart all ] [ Stop all ]  Logs
+
+dashboard        docker compose                        0/2 containers running
+  ○ ui       not created yet                 3001→80          [Start]
+  ○ worker   not created yet                 no ports         [Start]
+  [ Start all ]  Logs
+```
+
+`dashboard` has never been started, and still shows what it is made of and which
+ports it is configured to use. Services come from the compose file, so they are
+listed before any container exists; containers not in the file (left over from
+an older revision) are listed too rather than hidden.
+
+The port chip shows the port devcc will use and, for containers, the container
+port behind it (`3000→80`). Three numbers are tracked, because after a move they
+genuinely differ:
+
+| | meaning |
+| --- | --- |
+| **declared** | what the compose file or config says — `8080` |
+| **configured** | what devcc will actually use — `8081` after an override |
+| **actual** | what is listening right now — nothing, until it starts |
+
+The chip leads with **configured**, so a moved port reads `8081→8080  WAS 8080`
+the moment you choose it, rather than waiting until something is running — and
+turns amber, which is the whole signal. A substituted row is tagged
+`SUBSTITUTED` and names its provider, since that is information the chip cannot
+carry.
+
+### One action per row
+
+The button is whatever that row can actually do right now:
+
+| Row state | Button |
+| --- | --- |
+| running | **Kill** — stops just this container/app, nothing else |
+| stopped, port free | **Start** |
+| stopped, port taken | **Resolve…** — opens the conflict dialog |
+| provided by something else | **Unlink** |
+| no start command / docker down | disabled, with the reason on hover |
+
+Rows also carry their own inline note: `provided by shop/db on :5432`, or
+`moved to :3100 — configured as :3000`. A row whose behaviour has been
+customised gets a **change…** button that reopens the resolve dialog, so a
+decision can be revisited without first breaking something.
+
+**Clicking a port chip** opens a popover with that port's full story — configured
+vs actual, the container port behind it, and who holds it:
+
+```
+Port 5432                         IN USE BY SOMETHING ELSE
+  configured  5432
+  actual      not listening
+  container   5432
+
+  Port 5432 is occupied by container shop-db-1 (compose project "shop").
+  postgres:16
+                                              [ Resolve… ]
+```
+
+That sentence used to sit in the card's summary line, where it crowded out the
+scannable information and never said which row it referred to. Anchored to the
+chip it has an obvious subject, and the card line is just `Port conflict`.
+
+The card header shows the checked-out **git branch**, read straight from
+`.git/HEAD` (worktrees and detached HEADs included) rather than by shelling out
+to git once per project per refresh.
+
+Offering all three at once would mean two of them are wrong. **Open** appears on
+hover for running rows that publish a port; it goes through the agent so the URL
+lands in your default browser, and degrades to a plain link on a machine with no
+opener.
+
+Card-level **Start all** / **Stop all** / **Restart all** stay for compose
+projects, where doing four services one at a time is tedious. A supervised app
+is a single row, so its card has no duplicate buttons.
+
+Per-service compose commands are `up --detach --no-deps <service>` and
+`stop --timeout 10 <service>`. `--no-deps` matters: without it, starting one
+service would also start its dependencies, which is a decision you did not
+make.
+
 ## Port conflicts
 
-When a project is stopped and one of its ports is occupied, the card turns red
-and names the culprit:
+Starting something whose port is taken does not fail and does not guess. The
+agent refuses, returns the conflict, and **Resolve…** asks:
 
 ```
-Port 4001 is occupied by python3 (pid 5312).          [ Resolve ]
+Resolve the port conflict
+db in blog cannot use its configured port.
+
+  :5432 is held by container shop-db-1 (compose project "shop")
+
+  (•) Use something already running
+      This project will not start its own copy.
+      [ shop / db — :5432  (serves this port) ▾ ]
+
+  ( ) Start on a different port
+      You get a second, separate instance.
+      :5432 → [ 5433 ]
+
+  [ Free the port instead ]              [ Cancel ]  [ Use it ]
 ```
 
-**Resolve** stops that specific process or container, after a confirmation. The
-agent never reassigns ports and never kills anything on its own — v1's job is to
-explain the conflict, not to silently work around it. Starting a project into a
-known conflict is refused up front, with the same message, rather than letting
-it fail halfway.
+The two answers are genuinely different, and the wrong one is costly. Moving to
+another port gives you a **second instance** — right for a web server, wrong for
+the database three projects share, because an app talking to an empty second
+database looks healthy while being useless. **Substituting** says "the one
+already running is the one I want".
+
+### Substitutes
+
+A substituted unit is deliberately not started:
+
+- Its dot is green with a blue ring: it is genuinely being served, just not by
+  this project.
+- Its row reads `provided elsewhere` with `provided by shop/db on :5432`.
+- Its port stops counting as a conflict, so the project is no longer red.
+- **Start all** skips it — `up --detach web` rather than `up --detach` — so a
+  project-wide start cannot quietly undo the choice.
+- If the provider stops, the row says so (`substitute shop/db unavailable — not
+  running`) instead of silently pretending to be fine.
+- **Unlink** hands the unit back to this project, and **change…** reopens the
+  dialog — which then offers a third option, *Run it here, as configured*, that
+  drops both the substitute and any port override in one go.
+
+Candidates come from two places:
+
+| Source | Target | Example |
+| --- | --- | --- |
+| a unit devcc manages | `shop/db` | another project's compose service |
+| any running container | `docker/my-local-pg` | a hand-started `docker run -p 5432:5432 postgres`, or a stack outside your scan roots |
+
+The second is why the picker calls `docker ps`: the postgres you started by hand
+months ago is invisible to project discovery, and is exactly the thing a shared
+dependency should point at. Containers that a known project already accounts for
+are not offered twice, and anything publishing no port at all is left out — it
+cannot stand in for a dependency another project needs to reach.
+
+Candidates are ranked by whether they already serve the blocked port, so the
+likely answer is preselected, with managed units above loose containers.
+
+A `docker/` target is matched by **container name**, so recreating the container
+under a generated name breaks the link — the row then reads `no running
+container called "my-local-pg"` rather than pretending to be satisfied. The
+`docker/` prefix is checked before project names, so a project called `docker`
+cannot shadow it.
+
+The suggested port is one that is genuinely free *and* not claimed by any other
+project the agent knows about, so accepting it does not just defer the same
+collision. A moved project keeps its choice across agent restarts, shows
+`Moved to :4003 — declared as :4001`, and has a **Reset ports** button.
+
+### Can it really move a Docker Compose port?
+
+Sometimes, and the dashboard is explicit about which case you are in. There is
+no CLI flag that remaps a published port, so:
+
+| Compose file says | Mechanism | Works? |
+| --- | --- | --- |
+| `"${WEB_PORT:-3000}:80"` | set `WEB_PORT` in the environment | yes — this is what compose variables are for |
+| `"3000:80"` | generated override file using `!override` | yes, on Compose **v2.24+** |
+| `"3000:80"` on older Compose | — | no; the dialog says so and offers to free the port instead |
+
+The second row is the subtle one. Layering an extra compose file with a
+different port does **not** replace the original — compose concatenates port
+lists, so you end up publishing both 3000 *and* 3100 and the conflict survives.
+Only the `!override` tag replaces. The agent verifies your Compose version
+before offering the option, writes the override into its own state directory
+(never into your repository), and refuses rather than silently producing a
+double-published service.
+
+For supervised processes it sets `PORT` and rewrites an explicit `--port` flag
+if the command has one. Neither is universal — Vite ignores `PORT`, and a
+hand-written server may hard-code its address — so after starting, the agent
+checks which port the process group actually opened and reports
+`ignored the requested port 4003 and is listening on 4001 instead` when they
+disagree.
+
+## Nothing stops without being asked
+
+The agent never shuts down a service you did not point at:
+
+- A start blocked by a port returns the conflict. Nothing is signalled until you
+  press **Free the port instead** in the dialog.
+- **Kill** acts on exactly one row: one container, or one supervised app.
+- `docker compose up`/`down` run **without** `--remove-orphans`. That flag stops
+  and deletes containers belonging to the project but absent from the current
+  compose file — a shutdown nobody requested.
+- Starting an already-running supervised project reports
+  `already running as pid N — use Restart to apply new settings` instead of
+  quietly doing nothing, so a start that carries a new port cannot appear to
+  have been applied while the old process keeps running.
+- Supervised processes are left running when the agent exits, unless you pass
+  `--stop-on-exit`.
 
 ## Security
 
@@ -258,7 +462,11 @@ Everything under `/api` requires the token.
 | `POST` | `/api/projects/refresh` | re-scan the roots now |
 | `GET` | `/api/projects/{id}` | one project |
 | `GET` | `/api/projects/{id}/status` | force a status refresh, return the state |
-| `POST` | `/api/projects/{id}/start` \| `/stop` \| `/restart` | runs to completion; returns the updated project |
+| `POST` | `/api/projects/{id}/units/{unit}/start` \| `/kill` | act on one container or app. `{unit}` is the compose service name, or `app`. Same body and 409 semantics as below. |
+| `GET` | `/api/projects/{id}/units/{unit}/candidates` | running units elsewhere that could provide this one |
+| `GET` | `/api/projects/{id}/units/{unit}/options` | how this unit could run — the same payload a refused start returns, with `blocked: false` when nothing is actually in the way |
+| `POST` | `/api/projects/{id}/units/{unit}/substitute` | `{"target": "shop/db"}`, or `""` to unlink. Persisted to the config file. |
+| `POST` | `/api/projects/{id}/start` \| `/stop` \| `/restart` | runs to completion; returns the updated project. Optional body: `{"stopOwners": true}`, `{"ports": {"3000": 3100}}`, `{"clearOverrides": true}`. With an empty body nothing is stopped and no port moves — a blocked start returns **409** with a `conflict` object describing the owners and a suggested free port. |
 | `GET` | `/api/projects/{id}/logs?tail=200` | snapshot; containers for compose projects, process output otherwise |
 | `GET` | `/api/projects/{id}/logs/stream` | SSE, one `line` event per log line |
 | `GET` | `/api/projects/{id}/health` | the configured probe and its last result |

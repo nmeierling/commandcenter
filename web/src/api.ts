@@ -1,4 +1,10 @@
-import type { AgentStatus, LogLine, Project } from './types'
+import type {
+  AgentStatus,
+  LogLine,
+  PortConflict,
+  Project,
+  SubstituteCandidate,
+} from './types'
 
 const TOKEN_KEY = 'devcc.token'
 
@@ -47,9 +53,25 @@ export class ApiError extends Error {
     message: string,
     readonly status: number,
     readonly project?: Project,
+    /** Present when a start was blocked by ports already in use. */
+    readonly conflict?: PortConflict,
   ) {
     super(message)
   }
+}
+
+/**
+ * Choices a user made in response to a conflict. Everything here is opt-in:
+ * sending an empty object means "start it, and tell me if something is in the
+ * way" — the agent will not stop anything on its own.
+ */
+export interface ActionOptions {
+  /** Authorises stopping whatever holds the conflicting ports. */
+  stopOwners?: boolean
+  /** Declared host port -> port to use instead. */
+  ports?: Record<string, number>
+  /** Return the project to the ports it declares. */
+  clearOverrides?: boolean
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -78,6 +100,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       (body as { error?: string })?.error ?? `${res.status} ${res.statusText}`,
       res.status,
       (body as { project?: Project })?.project,
+      (body as { conflict?: PortConflict })?.conflict,
     )
   }
   return body as T
@@ -104,8 +127,45 @@ export const api = {
 
   project: (id: string) => request<Project>(`/api/projects/${id}`),
 
-  action: (id: string, action: 'start' | 'stop' | 'restart') =>
-    request<Project>(`/api/projects/${id}/${action}`, { method: 'POST' }),
+  action: (
+    id: string,
+    action: 'start' | 'stop' | 'restart',
+    opts: ActionOptions = {},
+  ) =>
+    request<Project>(`/api/projects/${id}/${action}`, {
+      method: 'POST',
+      body: JSON.stringify(opts),
+    }),
+
+  /** Start or kill a single container / supervised app. */
+  unitAction: (
+    id: string,
+    unit: string,
+    action: 'start' | 'kill',
+    opts: ActionOptions = {},
+  ) =>
+    request<Project>(`/api/projects/${id}/units/${encodeURIComponent(unit)}/${action}`, {
+      method: 'POST',
+      body: JSON.stringify(opts),
+    }),
+
+  candidates: (id: string, unit: string) =>
+    request<{ candidates: SubstituteCandidate[] }>(
+      `/api/projects/${id}/units/${encodeURIComponent(unit)}/candidates`,
+    ).then((r) => r.candidates),
+
+  /** How this unit could run, whether or not anything is currently blocking it. */
+  options: (id: string, unit: string) =>
+    request<{ conflict: PortConflict }>(
+      `/api/projects/${id}/units/${encodeURIComponent(unit)}/options`,
+    ).then((r) => r.conflict),
+
+  /** Record (or clear, with an empty target) what provides a unit. */
+  substitute: (id: string, unit: string, target: string) =>
+    request<Project>(`/api/projects/${id}/units/${encodeURIComponent(unit)}/substitute`, {
+      method: 'POST',
+      body: JSON.stringify({ target }),
+    }),
 
   open: (id: string, url?: string) =>
     request<{ opened: string }>(`/api/projects/${id}/open`, {

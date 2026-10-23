@@ -43,6 +43,12 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/projects/{id}/start", s.action("start"))
 	api.HandleFunc("POST /api/projects/{id}/stop", s.action("stop"))
 	api.HandleFunc("POST /api/projects/{id}/restart", s.action("restart"))
+	// Per-unit control: one container, or one supervised app.
+	api.HandleFunc("POST /api/projects/{id}/units/{unit}/start", s.unitAction("start"))
+	api.HandleFunc("POST /api/projects/{id}/units/{unit}/kill", s.unitAction("kill"))
+	api.HandleFunc("GET /api/projects/{id}/units/{unit}/candidates", s.substituteCandidates)
+	api.HandleFunc("GET /api/projects/{id}/units/{unit}/options", s.unitOptions)
+	api.HandleFunc("POST /api/projects/{id}/units/{unit}/substitute", s.setSubstitute)
 	api.HandleFunc("GET /api/projects/{id}/logs", s.getLogs)
 	api.HandleFunc("GET /api/projects/{id}/logs/stream", s.streamLogs)
 	api.HandleFunc("GET /api/projects/{id}/health", s.getHealth)
@@ -126,15 +132,69 @@ func (s *Server) getProjectStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, v.State)
 }
 
+// actionRequest is the optional body on start/stop/restart. An empty body means
+// "just do it, and tell me if something is in the way" — the agent will not
+// stop anything or move any port unless one of these is set explicitly.
+type actionRequest struct {
+	// StopOwners authorises stopping whatever holds the conflicting ports.
+	StopOwners bool `json:"stopOwners"`
+	// Ports maps a declared host port to the one to use instead, as strings so
+	// the JSON object keys stay valid.
+	Ports map[string]int `json:"ports"`
+	// ClearOverrides puts the project back on the ports it declares.
+	ClearOverrides bool `json:"clearOverrides"`
+}
+
+// decodeActionOptions parses the optional request body shared by the project
+// and unit lifecycle endpoints.
+func decodeActionOptions(w http.ResponseWriter, r *http.Request) (core.ActionOptions, bool) {
+	var body actionRequest
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body)
+
+	opts := core.ActionOptions{
+		StopOwners:     body.StopOwners,
+		ClearOverrides: body.ClearOverrides,
+	}
+	if len(body.Ports) > 0 {
+		opts.PortOverrides = map[int]int{}
+		for declared, chosen := range body.Ports {
+			d, err := strconv.Atoi(declared)
+			if err != nil || d <= 0 || d > 65535 || chosen <= 0 || chosen > 65535 {
+				writeError(w, http.StatusBadRequest,
+					fmt.Sprintf("invalid port mapping %q -> %d", declared, chosen))
+				return opts, false
+			}
+			opts.PortOverrides[d] = chosen
+		}
+	}
+	return opts, true
+}
+
 func (s *Server) action(name string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		opts, ok := decodeActionOptions(w, r)
+		if !ok {
+			return
+		}
+
 		// The action runs to completion so the response carries the real
 		// outcome; the UI stays responsive because status updates arrive over
 		// SSE while the request is in flight.
-		v, err := s.mgr.Action(r.Context(), r.PathValue("id"), name)
+		v, err := s.mgr.Action(r.Context(), r.PathValue("id"), name, opts)
 		if err != nil {
 			if errors.Is(err, core.ErrUnknownProject) {
 				writeError(w, http.StatusNotFound, "unknown project")
+				return
+			}
+			// A port conflict is not a failure, it is a question: hand the
+			// dashboard everything it needs to ask the user what to do.
+			var conflict *core.PortConflictError
+			if errors.As(err, &conflict) {
+				writeJSON(w, http.StatusConflict, map[string]any{
+					"error":    conflict.Error(),
+					"conflict": conflict,
+					"project":  v,
+				})
 				return
 			}
 			if errors.Is(err, core.ErrBusy) {
@@ -151,6 +211,97 @@ func (s *Server) action(name string) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, v)
 	}
+}
+
+// unitAction starts or kills a single container or app. A kill only ever
+// happens because the user pressed the button on that row; a start still
+// refuses on a port conflict and returns 409 so the UI can offer another port.
+func (s *Server) unitAction(name string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		opts, ok := decodeActionOptions(w, r)
+		if !ok {
+			return
+		}
+		v, err := s.mgr.UnitAction(r.Context(), r.PathValue("id"), r.PathValue("unit"), name, opts)
+		if err != nil {
+			switch {
+			case errors.Is(err, core.ErrUnknownProject):
+				writeError(w, http.StatusNotFound, "unknown project")
+			case errors.Is(err, core.ErrUnknownUnit):
+				writeError(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, core.ErrBusy):
+				writeError(w, http.StatusConflict, err.Error())
+			default:
+				var conflict *core.PortConflictError
+				if errors.As(err, &conflict) {
+					writeJSON(w, http.StatusConflict, map[string]any{
+						"error":    conflict.Error(),
+						"conflict": conflict,
+						"project":  v,
+					})
+					return
+				}
+				writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+					"error":   err.Error(),
+					"project": v,
+				})
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, v)
+	}
+}
+
+// substituteCandidates lists running units elsewhere that could provide this
+// one — a database another project already has up, typically.
+func (s *Server) substituteCandidates(w http.ResponseWriter, r *http.Request) {
+	candidates := s.mgr.SubstituteCandidates(r.PathValue("id"), r.PathValue("unit"))
+	if candidates == nil {
+		candidates = []core.SubstituteCandidate{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"candidates": candidates})
+}
+
+// unitOptions returns the choices available for a unit — the same shape a
+// blocked start returns, so the dialog can also be opened on purpose to revisit
+// a decision.
+func (s *Server) unitOptions(w http.ResponseWriter, r *http.Request) {
+	opts, err := s.mgr.UnitOptions(r.Context(), r.PathValue("id"), r.PathValue("unit"))
+	if err != nil {
+		switch {
+		case errors.Is(err, core.ErrUnknownProject):
+			writeError(w, http.StatusNotFound, "unknown project")
+		case errors.Is(err, core.ErrUnknownUnit):
+			writeError(w, http.StatusNotFound, err.Error())
+		default:
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"conflict": opts})
+}
+
+// setSubstitute records that a unit is provided by something else, or clears
+// that choice with an empty target. It is persisted to the config file.
+func (s *Server) setSubstitute(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Target string `json:"target"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&body)
+
+	v, err := s.mgr.SetSubstitute(r.Context(), r.PathValue("id"), r.PathValue("unit"), body.Target)
+	if err != nil {
+		switch {
+		case errors.Is(err, core.ErrUnknownProject):
+			writeError(w, http.StatusNotFound, "unknown project")
+		case errors.Is(err, core.ErrUnknownUnit):
+			writeError(w, http.StatusNotFound, err.Error())
+		default:
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
 }
 
 func (s *Server) getLogs(w http.ResponseWriter, r *http.Request) {

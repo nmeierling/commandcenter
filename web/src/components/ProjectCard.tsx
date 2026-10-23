@@ -1,7 +1,9 @@
 import { useState } from 'react'
-import { api, ApiError } from '../api'
-import type { Port, Project } from '../types'
+import { api, ApiError, type ActionOptions } from '../api'
+import type { Port, PortConflict, Project, Unit } from '../types'
 import { LogPanel } from './LogPanel'
+import { ResolveDialog } from './ResolveDialog'
+import { UnitRow } from './UnitRow'
 
 interface Props {
   project: Project
@@ -30,27 +32,46 @@ export function ProjectCard({
 }: Props) {
   const [showLogs, setShowLogs] = useState(false)
   const [pending, setPending] = useState<string | null>(null)
+  const [dialog, setDialog] = useState<{
+    conflict: PortConflict
+    run: (opts: ActionOptions) => Promise<void>
+    substitute: (target: string) => Promise<void>
+    reset: () => Promise<void>
+    current?: { substituted: boolean; moved: boolean }
+  } | null>(null)
+
   const st = project.state
-  const busy = pending ?? st.busy ?? null
-  const running = st.status === 'running' || st.status === 'unhealthy'
-  const conflicts = st.ports.filter((p) => p.state === 'conflict')
+  const busy = !!(pending ?? st.busy)
+  const units = st.units
+  const anyRunning = units.some((u) => u.running)
 
-  // A compose project cannot be acted on without a daemon, and a project with
-  // no start command cannot be acted on at all.
-  const blocked =
-    project.runtime === 'none'
-      ? 'No start command is configured for this project'
-      : project.runtime === 'compose' && !dockerReady
-        ? 'The Docker daemon is not running'
-        : null
+  // A compose project has several units, so the card keeps whole-project
+  // controls. A supervised app is a single row, and duplicating its buttons on
+  // the card would just raise the question of which one you pressed.
+  const multiUnit = project.runtime === 'compose'
+  const runtimeBlocked =
+    project.runtime === 'compose' && !dockerReady ? 'The Docker daemon is not running' : null
 
-  const act = async (action: 'start' | 'stop' | 'restart') => {
-    setPending(action)
+  const call = async (fn: () => Promise<Project>, label: string) => {
+    setPending(label)
     try {
-      onUpdate(await api.action(project.id, action))
+      onUpdate(await fn())
+      setDialog(null)
     } catch (err) {
       if (err instanceof ApiError) {
-        onNotice(`${project.name}: ${err.message}`, true)
+        if (err.conflict) {
+          // A blocked start is a question, not a failure.
+          const c = err.conflict
+          const u = { id: c.unitId ?? '' } as Unit
+          setDialog({
+            conflict: c,
+            run: async (opts) => call(() => retryWith(c, opts), label),
+            substitute: (target) => (c.unitId ? substitute(u, target) : Promise.resolve()),
+            reset: () => (c.unitId ? resetUnit(u) : Promise.resolve()),
+          })
+        } else {
+          onNotice(`${project.name}: ${err.message}`, true)
+        }
         if (err.project) onUpdate(err.project)
       } else {
         onNotice(String(err), true)
@@ -60,49 +81,100 @@ export function ProjectCard({
     }
   }
 
-  const open = async () => {
+  // Re-runs whatever was blocked, carrying the user's decision.
+  const retryWith = (conflict: PortConflict, opts: ActionOptions) =>
+    conflict.unitId
+      ? api.unitAction(project.id, conflict.unitId, 'start', opts)
+      : api.action(project.id, anyRunning ? 'restart' : 'start', opts)
+
+  const projectAction = (action: 'start' | 'stop' | 'restart', opts: ActionOptions = {}) =>
+    call(() => api.action(project.id, action, opts), action)
+
+  const unitAction = (unit: Unit, action: 'start' | 'kill', opts: ActionOptions = {}) =>
+    call(() => api.unitAction(project.id, unit.id, action, opts), `${action}:${unit.id}`)
+
+  const openDialog = (unit: Unit, conflict: PortConflict) =>
+    setDialog({
+      conflict,
+      run: async (opts) => unitAction(unit, 'start', opts),
+      substitute: (target) => substitute(unit, target),
+      reset: () => resetUnit(unit),
+      current: {
+        substituted: !!unit.substitute,
+        moved: unit.ports.some((p) => p.declared && p.declared !== p.configured),
+      },
+    })
+
+  // Used both when a start was refused and when the user asks to revisit a
+  // decision. Asking the agent means the dialog shows the real owner and a
+  // genuinely free port, rather than a guess made in the browser.
+  const resolve = async (unit: Unit) => {
+    const customised =
+      !!unit.substitute || unit.ports.some((p) => p.declared && p.declared !== p.configured)
+    if (customised || unit.running) {
+      try {
+        openDialog(unit, await api.options(project.id, unit.id))
+      } catch (err) {
+        onNotice(err instanceof ApiError ? err.message : String(err), true)
+      }
+      return
+    }
     try {
-      const res = await api.open(project.id)
+      onUpdate(await api.unitAction(project.id, unit.id, 'start'))
+    } catch (err) {
+      if (err instanceof ApiError && err.conflict) {
+        openDialog(unit, err.conflict)
+      } else if (err instanceof ApiError) {
+        onNotice(`${project.name}: ${err.message}`, true)
+      }
+    }
+  }
+
+  const open = async (url?: string) => {
+    try {
+      const res = await api.open(project.id, url)
       onNotice(`Opened ${res.opened}`)
     } catch (err) {
       onNotice(err instanceof ApiError ? err.message : String(err), true)
     }
   }
 
-  const resolve = async (port: Port) => {
-    const who = describeOwner(port)
-    if (!window.confirm(`Stop ${who} to free port ${port.port}?`)) return
-    try {
-      const res = await api.resolvePort(project.id, port.port, false)
-      onNotice(res.message)
-      onUpdate(res.project)
-    } catch (err) {
-      onNotice(err instanceof ApiError ? err.message : String(err), true)
-    }
-  }
+  // Hand a unit back to this project: drop any substitute, then drop any port
+  // override. Scoped to one row, so it cannot undo a choice made for a sibling.
+  const resetUnit = (unit: Unit) =>
+    call(async () => {
+      if (unit.substitute) await api.substitute(project.id, unit.id, '')
+      return api.unitAction(project.id, unit.id, unit.running ? 'kill' : 'start', {
+        clearOverrides: true,
+      })
+    }, `reset:${unit.id}`)
+
+  const clearSubstitute = (unit: Unit) =>
+    call(() => api.substitute(project.id, unit.id, ''), `unlink:${unit.id}`)
+
+  const substitute = (unit: Unit, target: string) =>
+    call(() => api.substitute(project.id, unit.id, target), `sub:${unit.id}`)
 
   return (
-    <article className={`card${conflicts.length ? ' is-conflict' : ''}`}>
+    <article className={`card${st.ports.some((p) => p.state === 'conflict') ? ' is-conflict' : ''}`}>
       <div className="card-top">
         <span className={`dot ${st.status}`} aria-hidden="true" />
         <span className="card-name">{project.name}</span>
         <span className="card-kind">{KIND_LABEL[project.kind] ?? project.kind}</span>
+        {project.branch && (
+          <span className="card-branch" title={`git branch: ${project.branch}`}>
+            <svg width="10" height="10" viewBox="0 0 16 16" aria-hidden="true" fill="currentColor">
+              <path d="M5 3.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm0 2.122a2.25 2.25 0 1 0-1.5 0v.878A2.25 2.25 0 0 0 5.75 8.5h1.5v2.128a2.251 2.251 0 1 0 1.5 0V8.5h1.5a2.25 2.25 0 0 0 2.25-2.25v-.878a2.25 2.25 0 1 0-1.5 0v.878a.75.75 0 0 1-.75.75h-4.5A.75.75 0 0 1 5 6.25v-.878ZM11 2.5a.75.75 0 1 1 0 1.5.75.75 0 0 1 0-1.5Zm-3 10a.75.75 0 1 1 0 1.5.75.75 0 0 1 0-1.5Z" />
+            </svg>
+            {project.branch}
+          </span>
+        )}
         <span className="sr-only">status: {st.status}</span>
-        <div className="card-ports">
-          {st.ports.map((p) => (
-            <span
-              key={p.port}
-              className={`port ${p.state}`}
-              title={portTitle(p)}
-            >
-              :{p.port}
-            </span>
-          ))}
-        </div>
+        <span className="card-summary">{summary(project)}</span>
       </div>
 
       <div className="card-detail">
-        <span>{statusLine(project, conflicts.length > 0)}</span>
+        <span>{statusLine(project)}</span>
         <span className="card-path" title={project.path}>
           {shortenPath(project.path)}
         </span>
@@ -114,122 +186,83 @@ export function ProjectCard({
         </div>
       )}
 
-      {conflicts.map((p) => (
-        <div className="notice bad" key={p.port}>
-          <span className="grow">
-            Port <strong>{p.port}</strong> is occupied by {describeOwner(p)}.
-            {p.owner?.command && (
-              <>
-                {' '}
-                <code>{truncate(p.owner.command, 90)}</code>
-              </>
-            )}
-          </span>
-          {p.owner ? (
-            <button className="danger" onClick={() => resolve(p)}>
-              Resolve
-            </button>
-          ) : null}
-        </div>
-      ))}
-
-      {project.runtime === 'none' && (
-        <div className="notice warn">
-          <span className="grow">
-            No start command detected. Add one under this project in your config
-            file to control it from here:{' '}
-            <code>start: npm run dev</code>
-          </span>
-        </div>
-      )}
-
-      {st.containers.length > 0 && (
-        <div className="containers">
-          {st.containers.map((c) => (
-            <ContainerRow key={c.name} name={c.service || c.name} state={c.state} status={c.status} health={c.health} />
+      {units.length > 0 && (
+        <ul className="units">
+          {units.map((u) => (
+            <UnitRow
+              key={u.id + (u.containerName ?? '')}
+              unit={u}
+              canOpenBrowser={canOpenBrowser}
+              runtimeBlocked={runtimeBlocked}
+              busy={busy}
+              onStart={() => unitAction(u, 'start')}
+              onResolve={() => resolve(u)}
+              onClearSubstitute={() => clearSubstitute(u)}
+              onKill={() => unitAction(u, 'kill')}
+              onOpen={() => open(u.url)}
+            />
           ))}
-        </div>
+        </ul>
       )}
 
       <div className="card-actions">
-        {running ? (
+        {multiUnit && (
           <>
             <button
-              onClick={() => act('restart')}
-              disabled={!!busy || !!blocked}
-              title={blocked ?? undefined}
+              className={anyRunning ? undefined : 'primary'}
+              onClick={() => projectAction(anyRunning ? 'restart' : 'start')}
+              disabled={busy || !!runtimeBlocked}
+              title={runtimeBlocked ?? undefined}
             >
-              {busy === 'restart' ? 'Restarting…' : 'Restart'}
+              {anyRunning ? 'Restart all' : 'Start all'}
             </button>
-            <button
-              onClick={() => act('stop')}
-              disabled={!!busy || !!blocked}
-              title={blocked ?? undefined}
-            >
-              {busy === 'stop' ? 'Stopping…' : 'Stop'}
-            </button>
+            {anyRunning && (
+              <button
+                onClick={() => projectAction('stop')}
+                disabled={busy || !!runtimeBlocked}
+                title={runtimeBlocked ?? undefined}
+              >
+                Stop all
+              </button>
+            )}
           </>
-        ) : (
-          <button
-            className="primary"
-            onClick={() => act('start')}
-            disabled={!!busy || !!blocked}
-            title={blocked ?? undefined}
-          >
-            {busy === 'start' ? 'Starting…' : 'Start'}
-          </button>
         )}
-        <button
-          onClick={open}
-          disabled={project.urls.length === 0 || !canOpenBrowser}
-          title={
-            project.urls.length === 0
-              ? 'No URL known for this project'
-              : !canOpenBrowser
-                ? 'The agent has no way to open a browser on this machine'
-                : project.urls[0]
-          }
-        >
-          Open
-        </button>
         <button className="ghost" onClick={() => setShowLogs((v) => !v)}>
           {showLogs ? 'Hide logs' : 'Logs'}
         </button>
       </div>
 
       {showLogs && <LogPanel project={project} onClose={() => setShowLogs(false)} />}
+
+      {dialog && (
+        <ResolveDialog
+          conflict={dialog.conflict}
+          onCancel={() => setDialog(null)}
+          onStart={(opts) => void dialog.run(opts)}
+          onSubstitute={(target) => void dialog.substitute(target)}
+          onReset={() => void dialog.reset()}
+          current={dialog.current}
+        />
+      )}
     </article>
   )
 }
 
-function ContainerRow({
-  name,
-  state,
-  status,
-  health,
-}: {
-  name: string
-  state: string
-  status?: string
-  health?: string
-}) {
-  return (
-    <>
-      <span className={`dot ${state === 'running' ? 'running' : 'stopped'}`} />
-      <span className="svc">{name}</span>
-      <span>
-        {status || state}
-        {health ? ` · ${health}` : ''}
-      </span>
-    </>
-  )
+function summary(p: Project): string {
+  const units = p.state.units
+  if (units.length === 0) return ''
+  const running = units.filter((u) => u.running).length
+  const noun = p.runtime === 'compose' ? 'container' : 'app'
+  const plural = units.length === 1 ? noun : `${noun}s`
+  return `${running}/${units.length} ${plural} running`
 }
 
-function statusLine(p: Project, hasConflictNotice: boolean): string {
+function statusLine(p: Project): string {
   const st = p.state
-  // The conflict notice below already spells this out; repeating it in the
-  // summary line just makes the card noisier.
-  if (hasConflictNotice && st.status === 'conflict') return 'Not running'
+  // Nothing here for a conflict: the offending row is highlighted, its chip is
+  // red, and the popover on that chip has the detail. A count in the header
+  // only repeats what the rows already show.
+  if (st.status === 'conflict') return ''
   if (st.detail) return st.detail
   switch (st.status) {
     case 'running':
@@ -243,34 +276,10 @@ function statusLine(p: Project, hasConflictNotice: boolean): string {
   }
 }
 
-function describeOwner(p: Port): string {
-  const o = p.owner
-  if (!o) return 'an unidentified process'
-  if (o.composeProject) return `compose project “${o.composeProject}” (${o.container})`
-  if (o.container) return `container ${o.container}`
-  if (o.process) return `${o.process} (pid ${o.pid})`
-  return `pid ${o.pid}`
-}
-
-function portTitle(p: Port): string {
-  const from = p.source ? ` (from ${p.source})` : ''
-  switch (p.state) {
-    case 'owned':
-      return `Port ${p.port} is served by this project${from}`
-    case 'conflict':
-      return `Port ${p.port} is taken by ${describeOwner(p)}${from}`
-    case 'unknown-owner':
-      return `Port ${p.port} is in use, owner unknown${from}`
-    default:
-      return `Port ${p.port} is free${from}`
-  }
-}
-
 function shortenPath(path: string): string {
   const parts = path.split('/')
   return parts.length > 4 ? `…/${parts.slice(-3).join('/')}` : path
 }
 
-function truncate(s: string, n: number): string {
-  return s.length > n ? `${s.slice(0, n)}…` : s
-}
+// Kept exported-free but referenced by the card's conflict class computation.
+export type { Port }

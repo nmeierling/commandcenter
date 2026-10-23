@@ -69,6 +69,21 @@ projects: []
   #   path: ~/Projects/legacy
   #   disabled: true          # hide it without deleting anything
 
+# The keys below are written by the dashboard when you resolve a port conflict,
+# and are equally fine to edit by hand. They live here rather than in hidden
+# agent state so a choice is visible, reviewable, and shareable.
+#
+# - name: Blog
+#   path: ~/Projects/blog
+#   # Run on a different host port than the project declares.
+#   portOverrides:
+#     3000: 3100
+#   # This project's `db` service is provided by the one Ecommerce is already
+#   # running, so devcc will not start a second copy — right for a shared
+#   # database, where a second instance on another port would be empty.
+#   substitutes:
+#     db: Ecommerce/db
+
 # Reading .devcc.yaml from inside individual project directories stays off by
 # default: such a file specifies commands this agent would execute, so honouring
 # it would make cloning an untrusted repo enough to get code execution.

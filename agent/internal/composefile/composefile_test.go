@@ -40,7 +40,8 @@ services:
       - "[::1]:5000:80"
 `)
 
-	name, ports, err := Parse(path)
+	name, services, err := Parse(path)
+	ports := AllPorts(services)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +85,8 @@ services:
 	// Service maps iterate in random order; ports must not reshuffle between
 	// refreshes or the dashboard flickers.
 	for i := 0; i < 20; i++ {
-		_, ports, err := Parse(path)
+		_, services, err := Parse(path)
+		ports := AllPorts(services)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -107,7 +109,8 @@ services:
     ports: ["${NOT_SET:-4444}:80"]
 `)
 
-	_, ports, err := Parse(path)
+	_, services, err := Parse(path)
+	ports := AllPorts(services)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +135,8 @@ services:
 `)
 	t.Setenv("DB_PORT", "25432")
 
-	_, ports, err := Parse(path)
+	_, services, err := Parse(path)
+	ports := AllPorts(services)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +152,8 @@ services:
   wide:
     ports: ["1000-60000:80"]
 `)
-	_, ports, err := Parse(path)
+	_, services, err := Parse(path)
+	ports := AllPorts(services)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,5 +175,42 @@ func TestFindPrefersCanonicalName(t *testing.T) {
 	}
 	if got := Find(t.TempDir()); got != "" {
 		t.Errorf("expected empty for a directory with no compose file, got %q", got)
+	}
+}
+
+func TestParseListsEveryServiceIncludingPortless(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "compose.yaml", `
+services:
+  web:
+    image: nginx
+    ports: ["3000:80"]
+  worker:
+    image: alpine
+    command: ["sleep", "60"]
+  db:
+    image: postgres
+    ports: ["5432:5432"]
+`)
+	_, services, err := Parse(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A service with no published ports is still part of the project, and the
+	// dashboard lists it whatever its state.
+	if len(services) != 3 {
+		t.Fatalf("got %d services, want 3: %+v", len(services), services)
+	}
+	// Sorted, so rows do not reshuffle between refreshes.
+	if services[0].Name != "db" || services[1].Name != "web" || services[2].Name != "worker" {
+		t.Errorf("services should be sorted by name, got %+v", services)
+	}
+	for _, svc := range services {
+		if svc.Name == "worker" && len(svc.Ports) != 0 {
+			t.Errorf("worker should have no ports, got %+v", svc.Ports)
+		}
+		if svc.Name == "web" && (len(svc.Ports) != 1 || svc.Ports[0].Host != 3000 || svc.Ports[0].Container != 80) {
+			t.Errorf("web ports = %+v, want 3000->80", svc.Ports)
+		}
 	}
 }

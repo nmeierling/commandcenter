@@ -20,6 +20,7 @@ import (
 	"github.com/devcc/agent/internal/config"
 	"github.com/devcc/agent/internal/discovery"
 	"github.com/devcc/agent/internal/dockercli"
+	"github.com/devcc/agent/internal/gitinfo"
 	"github.com/devcc/agent/internal/health"
 	"github.com/devcc/agent/internal/logbuf"
 	"github.com/devcc/agent/internal/model"
@@ -47,11 +48,18 @@ type entry struct {
 
 // Manager is the agent's brain.
 type Manager struct {
-	cfg     config.Config
-	docker  *dockercli.Client
-	procs   *procmgr.Manager
-	checker *health.Checker
-	hub     *hub
+	cfg      config.Config
+	stateDir string
+	docker   *dockercli.Client
+	procs    *procmgr.Manager
+	checker  *health.Checker
+	hub      *hub
+	// configPath is the file lifecycle choices are written back to.
+	configPath string
+	// portOverrides and subs mirror the config file: project ID -> the ports
+	// the user moved this project onto, and the units something else provides.
+	portOverrides map[string]map[int]int
+	subs          map[string]map[string]string
 
 	mu      sync.RWMutex
 	byID    map[string]*entry
@@ -61,17 +69,33 @@ type Manager struct {
 	sem chan struct{}
 
 	daemonOK atomicBool
+
+	// containersMu guards the most recent `docker ps` result, which substitute
+	// resolution reads outside a refresh cycle.
+	containersMu sync.RWMutex
+	containers   []dockercli.RunningContainer
+
+	// testSnapshot, when set, replaces the live host inspection. It exists so
+	// port states that are impractical to arrange for real (a port held by
+	// another user, a container publishing with no visible host listener) can
+	// be driven through the real decision logic.
+	testSnapshot *hostSnapshot
 }
 
 // New builds a manager. stateDir holds supervised-process bookkeeping and logs.
 func New(cfg config.Config, stateDir string) (*Manager, error) {
 	m := &Manager{
-		cfg:     cfg,
-		docker:  dockercli.New(),
-		checker: health.New(cfg.Poll.HealthTimeout),
-		hub:     newHub(),
-		byID:    map[string]*entry{},
-		sem:     make(chan struct{}, max(1, cfg.Poll.MaxConcurrent)),
+		cfg:      cfg,
+		stateDir: stateDir,
+		docker:   dockercli.New(),
+		checker:  health.New(cfg.Poll.HealthTimeout),
+		hub:      newHub(),
+		byID:     map[string]*entry{},
+		sem:      make(chan struct{}, max(1, cfg.Poll.MaxConcurrent)),
+
+		configPath:    cfg.Path(),
+		portOverrides: map[string]map[int]int{},
+		subs:          map[string]map[string]string{},
 	}
 
 	procs, err := procmgr.New(stateDir, m.logBuffer)
@@ -116,7 +140,15 @@ func (m *Manager) Discover() {
 	}
 
 	var scanErrs []string
+	overridesByPath := map[string]map[int]int{}
+	subsByPath := map[string]map[string]string{}
 	for _, cp := range m.cfg.Projects {
+		if len(cp.PortOverrides) > 0 {
+			overridesByPath[cp.Path] = cp.PortOverrides
+		}
+		if len(cp.Substitutes) > 0 {
+			subsByPath[cp.Path] = cp.Substitutes
+		}
 		base, ok := byPath[cp.Path]
 		if !ok {
 			// A configured path that discovery did not reach: inspect it
@@ -148,6 +180,8 @@ func (m *Manager) Discover() {
 	m.mu.Lock()
 	// Preserve state and log buffers for projects we already knew about.
 	newByID := map[string]*entry{}
+	newOverrides := map[string]map[int]int{}
+	newSubs := map[string]map[string]string{}
 	var newOrder []string
 	for _, path := range order {
 		p := byPath[path]
@@ -158,12 +192,25 @@ func (m *Manager) Discover() {
 		if !ok {
 			e = &entry{logs: logbuf.New(4000), state: model.State{Status: model.StatusUnknown}}
 		}
+		// A port the user moved this project onto is what it actually runs on,
+		// so fold it in before anything else looks at the port list.
+		if ov := overridesByPath[p.Path]; len(ov) > 0 {
+			newOverrides[p.ID] = ov
+			applyOverridesToPorts(p, ov)
+		}
+		if sub := subsByPath[p.Path]; len(sub) > 0 {
+			newSubs[p.ID] = sub
+		}
+		p.PortControl = derivePortControl(p, m.docker)
+		p.Branch = gitinfo.Read(p.Path).Branch
 		e.project = *p
 		newByID[p.ID] = e
 		newOrder = append(newOrder, p.ID)
 	}
 	m.byID = newByID
 	m.order = newOrder
+	m.portOverrides = newOverrides
+	m.subs = newSubs
 	m.scanErr = strings.Join(scanErrs, "; ")
 	m.mu.Unlock()
 
@@ -246,6 +293,19 @@ func normalize(v model.View) model.View {
 	}
 	if v.State.Containers == nil {
 		v.State.Containers = []model.Container{}
+	}
+	for i := range v.State.Containers {
+		if v.State.Containers[i].Ports == nil {
+			v.State.Containers[i].Ports = []model.ContainerPort{}
+		}
+	}
+	if v.State.Units == nil {
+		v.State.Units = []model.Unit{}
+	}
+	for i := range v.State.Units {
+		if v.State.Units[i].Ports == nil {
+			v.State.Units[i].Ports = []model.UnitPort{}
+		}
 	}
 	return v
 }
@@ -394,13 +454,28 @@ func (m *Manager) RefreshOne(ctx context.Context, id string) (model.View, error)
 type hostSnapshot struct {
 	tcp             *ports.Snapshot
 	containerOwners map[int]*model.PortOwner
+	containers      []dockercli.RunningContainer
 }
 
 func (m *Manager) snapshot(ctx context.Context) *hostSnapshot {
+	if m.testSnapshot != nil {
+		return m.testSnapshot
+	}
 	s := &hostSnapshot{tcp: ports.Take(), containerOwners: map[int]*model.PortOwner{}}
 	if m.daemonOK.get() {
-		if owners, err := m.docker.ContainerOwners(ctx); err == nil {
-			s.containerOwners = owners
+		// One `docker ps` per cycle serves both port attribution and the list of
+		// containers offered as substitutes.
+		if containers, err := m.docker.ListContainers(ctx); err == nil {
+			s.containers = containers
+			for _, rc := range containers {
+				owner := rc.Owner()
+				for _, port := range rc.Ports {
+					if _, dup := s.containerOwners[port.Host]; !dup {
+						s.containerOwners[port.Host] = owner
+					}
+				}
+			}
+			m.setContainers(containers)
 		}
 	}
 	return s
@@ -430,10 +505,15 @@ func (m *Manager) refresh(ctx context.Context, id string, snap *hostSnapshot) {
 	case model.RuntimeCompose:
 		m.refreshCompose(ctx, &p, &next)
 	case model.RuntimeProcess:
-		m.refreshProcess(&p, &next)
+		m.refreshProcess(&p, &next, snap)
 	}
 
 	next.Ports = m.resolvePorts(&p, &next, snap)
+	// Units are built before the status is derived, because a satisfied
+	// substitution turns what looks like a conflict into the desired state and
+	// the project's status has to reflect that.
+	next.Units = m.decorateUnits(buildUnits(&p, &next, next.Ports), p.ID)
+	applySubstitutedPorts(&next)
 	m.deriveStatus(ctx, &p, &next, startedAt)
 
 	m.mu.Lock()
@@ -459,7 +539,7 @@ func (m *Manager) refreshCompose(ctx context.Context, p *model.Project, st *mode
 		return
 	}
 
-	res, err := m.docker.Ps(ctx, p.Path, p.ComposeFile)
+	res, err := m.docker.Ps(ctx, p.Path, p.ComposeFile, m.composeReadOptions(*p))
 	if err != nil {
 		st.Status = model.StatusError
 		st.Error = err.Error()
@@ -477,8 +557,24 @@ func (m *Manager) refreshCompose(ctx context.Context, p *model.Project, st *mode
 	sort.Slice(p.Ports, func(i, j int) bool { return p.Ports[i].Port < p.Ports[j].Port })
 }
 
-func (m *Manager) refreshProcess(p *model.Project, st *model.State) {
+func (m *Manager) refreshProcess(p *model.Project, st *model.State, snap *hostSnapshot) {
 	st.Process = m.procs.Info(p.ID)
+	if st.Process == nil || !st.Process.Running {
+		return
+	}
+	// Find the ports this project's process group actually opened. A dev server
+	// that ignores PORT, or one whose port we never detected statically, is
+	// otherwise invisible — and after a port override this is the only way to
+	// know whether the move took effect.
+	for port, owner := range snap.tcp.Owners() {
+		if owner == nil || hasPort(p.Ports, port) {
+			continue
+		}
+		if m.procs.OwnsPID(p.ID, owner.PID) {
+			p.Ports = append(p.Ports, model.Port{Port: port, Source: "observed"})
+		}
+	}
+	sort.Slice(p.Ports, func(i, j int) bool { return p.Ports[i].Port < p.Ports[j].Port })
 }
 
 // resolvePorts decides, for each expected port, whether it is free, ours, or
@@ -487,7 +583,12 @@ func (m *Manager) refreshProcess(p *model.Project, st *model.State) {
 func (m *Manager) resolvePorts(p *model.Project, st *model.State, snap *hostSnapshot) []model.Port {
 	out := make([]model.Port, 0, len(p.Ports))
 	for _, port := range p.Ports {
-		res := model.Port{Port: port.Port, Source: port.Source, Service: port.Service, State: model.PortFree}
+		// Carry the whole descriptor forward. Rebuilding it field by field is
+		// how "moved from 3000" and the compose variable name silently went
+		// missing from the state the UI actually reads.
+		res := port
+		res.State = model.PortFree
+		res.Owner = nil
 
 		containerOwner := snap.containerOwners[port.Port]
 		processOwner := snap.tcp.Owner(port.Port)
@@ -591,6 +692,17 @@ func (m *Manager) deriveStatus(ctx context.Context, p *model.Project, st *model.
 			running = true
 			st.Status = model.StatusRunning
 			st.Detail = "pid " + strconv.Itoa(st.Process.PID)
+			// Telling the user it is on the port they picked when it is not
+			// would be worse than the original conflict.
+			if missed, actual := unhonouredPort(st.Ports); missed > 0 {
+				st.Status = model.StatusUnhealthy
+				if actual > 0 {
+					st.Detail = fmt.Sprintf(
+						"ignored the requested port %d and is listening on %d instead", missed, actual)
+				} else {
+					st.Detail = fmt.Sprintf("is not listening on the requested port %d", missed)
+				}
+			}
 		} else {
 			st.Status = model.StatusStopped
 			switch {
@@ -692,6 +804,23 @@ func firstConflict(ps []model.Port) *model.Port {
 	return nil
 }
 
+// unhonouredPort reports a port the user asked the project to move to that it
+// did not actually bind, along with whatever it bound instead.
+func unhonouredPort(ps []model.Port) (missed, actual int) {
+	for _, p := range ps {
+		if p.Declared > 0 && p.Declared != p.Port && p.State != model.PortOwned {
+			missed = p.Port
+		}
+		if p.Source == "observed" && p.State == model.PortOwned {
+			actual = p.Port
+		}
+	}
+	if missed == 0 {
+		return 0, 0
+	}
+	return missed, actual
+}
+
 func anyPortOwned(ps []model.Port) bool {
 	for _, p := range ps {
 		if p.State == model.PortOwned || p.State == model.PortUnknownOwner {
@@ -728,9 +857,18 @@ var ErrNotControllable = errors.New("this project has no start mechanism; set a 
 // Action runs start, stop or restart. It returns once the underlying command
 // finishes, so the HTTP handler can report the real error; the UI keeps the
 // card marked busy in the meantime via events.
-func (m *Manager) Action(ctx context.Context, id, action string) (model.View, error) {
+func (m *Manager) Action(ctx context.Context, id, action string, opts ActionOptions) (model.View, error) {
 	e, err := m.entry(id)
 	if err != nil {
+		return model.View{}, err
+	}
+
+	// Record port choices before anything reads the project, so the start uses
+	// them and the dashboard shows them.
+	if err := m.applyPortChoices(id, "", opts); err != nil {
+		return model.View{}, err
+	}
+	if e, err = m.entry(id); err != nil {
 		return model.View{}, err
 	}
 
@@ -759,7 +897,7 @@ func (m *Manager) Action(ctx context.Context, id, action string) (model.View, er
 	m.mu.Unlock()
 	m.hub.publish(Event{Type: EventProject, Project: &view})
 
-	actionErr := m.runAction(ctx, e, p, action)
+	actionErr := m.runAction(ctx, e, p, action, opts)
 
 	m.mu.Lock()
 	e.state.Busy = ""
@@ -776,8 +914,22 @@ func (m *Manager) Action(ctx context.Context, id, action string) (model.View, er
 	return out, nil
 }
 
-func (m *Manager) runAction(ctx context.Context, e *entry, p model.Project, action string) error {
+func (m *Manager) runAction(ctx context.Context, e *entry, p model.Project, action string, opts ActionOptions) error {
 	e.logs.Append("agent", fmt.Sprintf("--- %s %s ---", action, p.Name))
+
+	// Anything that brings a project up has to claim its ports, so check for
+	// conflicts first and hand the decision back to the user. Nothing is
+	// stopped and no port is moved unless they said so.
+	if action == "start" || action == "restart" {
+		if conflict := m.checkConflicts(ctx, p, opts); conflict != nil {
+			if !opts.StopOwners {
+				return conflict
+			}
+			if err := m.stopConflictOwners(ctx, p, conflict); err != nil {
+				return err
+			}
+		}
+	}
 
 	switch p.Runtime {
 	case model.RuntimeCompose:
@@ -803,36 +955,55 @@ func (m *Manager) runComposeAction(ctx context.Context, e *entry, p model.Projec
 		return fmt.Errorf("no compose file in %s", p.Path)
 	}
 
-	var (
-		out string
-		err error
-	)
+	dopts, err := m.composeStartOptions(p)
+	if err != nil {
+		return err
+	}
+	if len(dopts.Env) > 0 {
+		e.logs.Append("agent", "using port override: "+strings.Join(dopts.Env, " "))
+	}
+	if len(dopts.ExtraFiles) > 0 {
+		e.logs.Append("agent", "using generated compose override: "+strings.Join(dopts.ExtraFiles, " "))
+	}
+
+	// Services the user marked as provided elsewhere must not be started by a
+	// project-wide action either, or "Start all" would quietly undo the choice.
+	services := m.startableServices(p)
+
+	var out string
 	switch action {
 	case "start":
-		out, err = m.docker.Up(ctx, p.Path, p.ComposeFile)
+		out, err = m.docker.Up(ctx, p.Path, p.ComposeFile, services, dopts)
 	case "stop":
-		out, err = m.docker.Down(ctx, p.Path, p.ComposeFile)
+		out, err = m.docker.Down(ctx, p.Path, p.ComposeFile, dopts)
 	case "restart":
 		// `compose restart` does not pick up changed compose files or images.
 		// `up -d` reconciles instead, which is what a developer clicking
 		// Restart almost always wants; fall back to restart for a project that
 		// is already fully up.
-		out, err = m.docker.Up(ctx, p.Path, p.ComposeFile)
+		out, err = m.docker.Up(ctx, p.Path, p.ComposeFile, services, dopts)
 		if err == nil {
 			var restartOut string
-			restartOut, err = m.docker.Restart(ctx, p.Path, p.ComposeFile)
+			restartOut, err = m.docker.Restart(ctx, p.Path, p.ComposeFile, services, dopts)
 			out += restartOut
 		}
 	default:
 		return fmt.Errorf("unknown action %q", action)
 	}
 
+	appendLines(e, out)
+	return err
+}
+
+// splitNonEmptyLines turns command output into log lines.
+func splitNonEmptyLines(out string) []string {
+	var lines []string
 	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
 		if line != "" {
-			e.logs.Append("agent", line)
+			lines = append(lines, line)
 		}
 	}
-	return err
+	return lines
 }
 
 func (m *Manager) runProcessAction(ctx context.Context, e *entry, p model.Project, action string) error {
@@ -859,19 +1030,16 @@ func (m *Manager) startProcess(p model.Project) error {
 	if p.StartCommand == "" {
 		return ErrNotControllable
 	}
-	// Refuse to start into a known conflict: the process would either fail
-	// immediately or, worse, silently bind a different port.
-	if conflict := m.conflictingPort(p); conflict != nil {
-		return fmt.Errorf("cannot start: %s", conflictDetail(conflict))
-	}
-	_, err := m.procs.Start(procmgr.Spec{
-		ID:      p.ID,
-		Dir:     p.Path,
-		Command: p.StartCommand,
-		Env:     p.Env,
-	})
+	// Port conflicts were already resolved (or refused) in runAction, which is
+	// the single place that decides whether anything may be stopped or moved.
+	proc, err := m.procs.Start(m.processStartSpec(p))
 	if errors.Is(err, procmgr.ErrAlreadyRunning) {
-		return nil
+		// Silently succeeding here would be a lie: a start carrying new
+		// settings (a moved port, say) would appear to have been applied while
+		// the old process kept running with the old ones. Restart is the
+		// action that replaces a running process, and we never do that
+		// implicitly.
+		return fmt.Errorf("already running as pid %d — use Restart to apply new settings", proc.PID)
 	}
 	return err
 }
@@ -991,7 +1159,7 @@ func (m *Manager) ComposeLogs(ctx context.Context, id string, tail int) (string,
 	if v.Runtime != model.RuntimeCompose {
 		return "", errors.New("not a compose project")
 	}
-	return m.docker.Logs(ctx, v.Path, v.ComposeFile, tail)
+	return m.docker.Logs(ctx, v.Path, v.ComposeFile, tail, m.composeReadOptions(v.Project))
 }
 
 // FollowComposeLogs streams compose logs into the project's buffer for as long
@@ -1010,7 +1178,7 @@ func (m *Manager) FollowComposeLogs(ctx context.Context, id string, tail int) er
 	if err != nil {
 		return err
 	}
-	rc, err := m.docker.FollowLogs(ctx, v.Path, v.ComposeFile, tail)
+	rc, err := m.docker.FollowLogs(ctx, v.Path, v.ComposeFile, tail, m.composeReadOptions(v.Project))
 	if err != nil {
 		return err
 	}

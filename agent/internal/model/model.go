@@ -58,6 +58,9 @@ const (
 	PortConflict PortState = "conflict"
 	// PortUnknownOwner means the port is listening but we could not attribute it.
 	PortUnknownOwner PortState = "unknown-owner"
+	// PortSubstituted means something else is serving this port on purpose,
+	// because the user chose it as a stand-in.
+	PortSubstituted PortState = "substituted"
 )
 
 // PortOwner identifies whoever is holding a TCP port.
@@ -81,6 +84,43 @@ type Port struct {
 	Owner  *PortOwner `json:"owner,omitempty"`
 	// Service is the compose service that declares the port, when known.
 	Service string `json:"service,omitempty"`
+	// ContainerPort is the port inside the container that Port maps to. Moving
+	// a published port means changing only the host side of that pair.
+	ContainerPort int `json:"containerPort,omitempty"`
+	// Variable is the environment variable a compose file uses to declare this
+	// port, as in "${WEB_PORT:-3000}:80". Its presence is what makes the port
+	// changeable without editing the compose file.
+	Variable string `json:"variable,omitempty"`
+	// Declared is the port as written in the project, when an override is in
+	// effect and Port is the overridden value.
+	Declared int `json:"declared,omitempty"`
+}
+
+// PortChangeMechanism is how (or whether) a project's host port can be moved.
+type PortChangeMechanism string
+
+const (
+	// PortChangeNone means we have no safe way to move the port.
+	PortChangeNone PortChangeMechanism = "none"
+	// PortChangeEnv sets PORT in a supervised process's environment.
+	PortChangeEnv PortChangeMechanism = "env"
+	// PortChangeCommand rewrites an explicit --port flag in the start command.
+	PortChangeCommand PortChangeMechanism = "command"
+	// PortChangeComposeVar sets the variable the compose file already uses.
+	PortChangeComposeVar PortChangeMechanism = "compose-var"
+	// PortChangeComposeOverride writes an agent-owned compose override file
+	// using the `!override` tag. Never touches files inside the project.
+	PortChangeComposeOverride PortChangeMechanism = "compose-override"
+)
+
+// PortControl describes whether this project's ports can be moved, and how.
+// The dashboard uses it to decide whether offering "start on another port" is
+// honest, rather than promising something that silently will not take effect.
+type PortControl struct {
+	CanChange bool                `json:"canChange"`
+	Mechanism PortChangeMechanism `json:"mechanism"`
+	// Reason explains why CanChange is false, in terms the user can act on.
+	Reason string `json:"reason,omitempty"`
 }
 
 // HealthCheck configures an HTTP probe.
@@ -101,6 +141,95 @@ type HealthResult struct {
 	At         time.Time `json:"at,omitempty"`
 }
 
+// UnitState is the lifecycle state of a single container or supervised app.
+type UnitState string
+
+const (
+	// UnitRunning is up and serving.
+	UnitRunning UnitState = "running"
+	// UnitExited ran and stopped.
+	UnitExited UnitState = "exited"
+	// UnitCreated exists but was never started.
+	UnitCreated UnitState = "created"
+	// UnitNotCreated is declared in the compose file but has no container yet.
+	// Showing these is the difference between "this project has four services"
+	// and "this project has nothing", which is only true until you start it.
+	UnitNotCreated UnitState = "not-created"
+	// UnitUnknown covers a project we cannot inspect (docker down, no runtime).
+	UnitUnknown UnitState = "unknown"
+	// UnitSubstituted means this unit is deliberately not running because
+	// something else is providing it.
+	UnitSubstituted UnitState = "substituted"
+)
+
+// Substitution records that a unit is provided by something already running.
+type Substitution struct {
+	Target      string `json:"target"`
+	ProjectID   string `json:"projectId,omitempty"`
+	ProjectName string `json:"projectName,omitempty"`
+	UnitID      string `json:"unitId,omitempty"`
+	// Known means the target names something identifiable; Satisfied means it
+	// is also running right now.
+	Known     bool   `json:"known"`
+	Satisfied bool   `json:"satisfied"`
+	Detail    string `json:"detail,omitempty"`
+	Ports     []int  `json:"ports,omitempty"`
+}
+
+// UnitPort pairs what a project asks for with what is actually published.
+//
+// Three numbers, because after a port override they genuinely differ:
+// the compose file declares 8080, devcc is configured to use 8081, and until
+// the container starts nothing is listening at all.
+type UnitPort struct {
+	// Configured is the port devcc will use — the override if one is set,
+	// otherwise the declared value. Zero for a port we only observed.
+	Configured int `json:"configured,omitempty"`
+	// Declared is the project's own value, set only when it differs from
+	// Configured because the user moved this port.
+	Declared int `json:"declared,omitempty"`
+	// Actual is the port in use right now. Zero when nothing is listening.
+	Actual int `json:"actual,omitempty"`
+	// Container is the port inside the container, for compose units.
+	Container int        `json:"container,omitempty"`
+	State     PortState  `json:"state"`
+	Owner     *PortOwner `json:"owner,omitempty"`
+}
+
+// Unit is one runnable thing inside a project: a compose service (or one of its
+// containers) or the single supervised process of a non-Docker project. The
+// dashboard shows one row per unit whatever its state.
+type Unit struct {
+	// ID addresses this unit in the API: the compose service name, or "app".
+	ID    string    `json:"id"`
+	Name  string    `json:"name"`
+	Kind  string    `json:"kind"` // "container" or "process"
+	State UnitState `json:"state"`
+	// Status is docker's human phrase ("Up 2 minutes"), when there is one.
+	Status        string     `json:"status,omitempty"`
+	Health        string     `json:"health,omitempty"`
+	Image         string     `json:"image,omitempty"`
+	ContainerName string     `json:"containerName,omitempty"`
+	ContainerID   string     `json:"containerId,omitempty"`
+	PID           int        `json:"pid,omitempty"`
+	Running       bool       `json:"running"`
+	Ports         []UnitPort `json:"ports"`
+	// URL is what the Open control opens for this unit.
+	URL string `json:"url,omitempty"`
+	// Blocked explains why this unit cannot be started right now.
+	Blocked string `json:"blocked,omitempty"`
+	// Substitute is set when the user chose something else to provide this
+	// unit, so it is intentionally not started.
+	Substitute *Substitution `json:"substitute,omitempty"`
+}
+
+// ContainerPort is a single published port mapping on a container.
+type ContainerPort struct {
+	Host      int    `json:"host"`
+	Container int    `json:"container"`
+	Protocol  string `json:"protocol,omitempty"`
+}
+
 // Container is a compose container belonging to a project.
 type Container struct {
 	Name    string `json:"name"`
@@ -110,6 +239,12 @@ type Container struct {
 	Status  string `json:"status,omitempty"`
 	Image   string `json:"image,omitempty"`
 	ID      string `json:"id,omitempty"`
+	// Ports are this container's published host ports, so the dashboard can
+	// show which container actually answers on which port.
+	Ports []ContainerPort `json:"ports"`
+	// URL is the address to open for this container: the first published TCP
+	// port, or empty when it publishes nothing.
+	URL string `json:"url,omitempty"`
 }
 
 // ProcessInfo describes a supervised child process.
@@ -150,6 +285,13 @@ type Project struct {
 	Ports  []Port       `json:"ports"`
 	URLs   []string     `json:"urls"`
 	Health *HealthCheck `json:"health,omitempty"`
+	// PortControl says whether this project's ports can be moved on start.
+	PortControl PortControl `json:"portControl"`
+	// Services are the compose services declared in the file, so the dashboard
+	// can list them before the project has ever been started.
+	Services []string `json:"services,omitempty"`
+	// Branch is the checked-out git branch, or a short commit when detached.
+	Branch string `json:"branch,omitempty"`
 
 	Disabled bool `json:"disabled,omitempty"`
 }
@@ -163,10 +305,13 @@ type State struct {
 	// Ports and Containers are never omitempty: the UI iterates them, and an
 	// absent key and an empty list are the same thing in Go but not in
 	// JavaScript.
-	Containers []Container  `json:"containers"`
-	Ports      []Port       `json:"ports"`
-	Process    *ProcessInfo `json:"process,omitempty"`
-	Health     HealthResult `json:"health"`
+	Containers []Container `json:"containers"`
+	// Units is one row per container or supervised app, listed whatever their
+	// state.
+	Units   []Unit       `json:"units"`
+	Ports   []Port       `json:"ports"`
+	Process *ProcessInfo `json:"process,omitempty"`
+	Health  HealthResult `json:"health"`
 	// Busy marks an in-flight lifecycle action ("start", "stop", "restart").
 	Busy      string    `json:"busy,omitempty"`
 	Error     string    `json:"error,omitempty"`

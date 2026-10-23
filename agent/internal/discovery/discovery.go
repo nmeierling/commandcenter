@@ -190,7 +190,7 @@ func applyCompose(p *model.Project, dir string) {
 	if p.ComposeFile == "" {
 		return
 	}
-	name, ports, err := composefile.Parse(p.ComposeFile)
+	name, services, err := composefile.Parse(p.ComposeFile)
 	if err != nil {
 		// A compose file we cannot parse is still a compose project; the CLI is
 		// the authority and will report the real error on start.
@@ -199,8 +199,18 @@ func applyCompose(p *model.Project, dir string) {
 	if name != "" {
 		p.ComposeProject = name
 	}
-	for _, hp := range ports {
-		p.Ports = append(p.Ports, model.Port{Port: hp.Host, Source: "compose", Service: hp.Service, State: model.PortFree})
+	for _, svc := range services {
+		p.Services = append(p.Services, svc.Name)
+	}
+	for _, hp := range composefile.AllPorts(services) {
+		p.Ports = append(p.Ports, model.Port{
+			Port:          hp.Host,
+			Source:        "compose",
+			Service:       hp.Service,
+			Variable:      hp.Variable,
+			ContainerPort: hp.Container,
+			State:         model.PortFree,
+		})
 	}
 }
 

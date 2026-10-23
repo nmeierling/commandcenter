@@ -69,6 +69,19 @@ func (s *Snapshot) Owner(port int) *model.PortOwner {
 	return s.owners[port]
 }
 
+// Owners returns every attributed listening port. It is how we discover the
+// port a dev server actually opened, as opposed to the one it was asked for.
+func (s *Snapshot) Owners() map[int]*model.PortOwner {
+	if s == nil {
+		return nil
+	}
+	out := make(map[int]*model.PortOwner, len(s.owners))
+	for port, owner := range s.owners {
+		out[port] = owner
+	}
+	return out
+}
+
 // Degraded reports whether ownership information is unavailable on this system.
 func (s *Snapshot) Degraded() bool { return s == nil || s.degraded }
 

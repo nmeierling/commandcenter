@@ -1,6 +1,10 @@
 package dockercli
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/devcc/agent/internal/model"
+)
 
 // Compose has emitted two different shapes for `ps --format json` over its v2
 // lifetime, and which one a developer gets depends on their Docker Desktop
@@ -43,23 +47,29 @@ func TestDecodePsEmptyOutput(t *testing.T) {
 }
 
 func TestParsePublishedPorts(t *testing.T) {
-	cases := map[string][]int{
-		"0.0.0.0:3000->3000/tcp, :::3000->3000/tcp": {3000},
-		"0.0.0.0:8080->80/tcp, [::]:8080->80/tcp":   {8080, 8080},
-		"127.0.0.1:5432->5432/tcp":                  {5432},
+	// Docker repeats each mapping for IPv4 and IPv6; the dashboard should show
+	// one row per mapping, not two.
+	cases := map[string][]model.ContainerPort{
+		"0.0.0.0:3000->3000/tcp, :::3000->3000/tcp": {{Host: 3000, Container: 3000, Protocol: "tcp"}},
+		"0.0.0.0:8080->80/tcp, [::]:8080->80/tcp":   {{Host: 8080, Container: 80, Protocol: "tcp"}},
+		"127.0.0.1:5432->5432/tcp":                  {{Host: 5432, Container: 5432, Protocol: "tcp"}},
 		"80/tcp":                                    nil,
 		"":                                          nil,
-		"0.0.0.0:1234->80/tcp, 0.0.0.0:5678->443/tcp": {1234, 5678},
+		"0.0.0.0:1234->80/tcp, 0.0.0.0:5678->443/tcp": {
+			{Host: 1234, Container: 80, Protocol: "tcp"},
+			{Host: 5678, Container: 443, Protocol: "tcp"},
+		},
+		"0.0.0.0:6060->6060/udp": {{Host: 6060, Container: 6060, Protocol: "udp"}},
 	}
 	for input, want := range cases {
 		got := parsePublished(input)
 		if len(got) != len(want) {
-			t.Errorf("parsePublished(%q) = %v, want %v", input, got, want)
+			t.Errorf("parsePublished(%q) = %+v, want %+v", input, got, want)
 			continue
 		}
 		for i := range want {
 			if got[i] != want[i] {
-				t.Errorf("parsePublished(%q) = %v, want %v", input, got, want)
+				t.Errorf("parsePublished(%q) = %+v, want %+v", input, got, want)
 				break
 			}
 		}

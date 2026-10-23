@@ -438,21 +438,321 @@ button.ghost:hover:not(:disabled) {
   color: var(--faint);
 }
 
-/* ---------- containers table ---------- */
+/* ---------- units (containers and supervised apps) ---------- */
 
-.containers {
+.units {
   margin: 10px 0 0 22px;
+  padding: 0;
+  list-style: none;
   font-size: 12px;
   color: var(--muted);
-  display: grid;
-  grid-template-columns: auto auto 1fr;
-  gap: 2px 12px;
-  align-items: baseline;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  /* Not hidden: a port popover has to escape this box. The corners are rounded
+     on the end rows instead. */
+  overflow: visible;
 }
 
-.containers .svc {
+.unit-row:first-child {
+  border-radius: 8px 8px 0 0;
+}
+
+.unit-row:last-child {
+  border-radius: 0 0 8px 8px;
+}
+
+.unit-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 9px;
+  min-height: 34px;
+}
+
+.unit-row + .unit-row {
+  border-top: 1px solid var(--border);
+}
+
+.unit-row:hover,
+.unit-row:focus-within {
+  background: var(--panel-hover);
+}
+
+.unit-row.has-conflict {
+  background: color-mix(in srgb, var(--bad) 7%, transparent);
+}
+
+.unit-name {
   font-family: var(--mono);
   color: var(--text);
+  min-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.unit-state {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.unit-ports {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.uport {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+}
+
+.uport.owned {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--border));
+}
+
+.uport.conflict {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 50%, var(--border));
+}
+
+.uport.unknown-owner {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 40%, var(--border));
+}
+
+.uport .arrow {
+  color: var(--faint);
+}
+
+.uport-target {
+  color: var(--faint);
+}
+
+/* A moved port is called out in the chip itself, so no sentence is needed
+   underneath the row. */
+.uport.moved {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--border));
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
+}
+
+.uport.moved .uport-target,
+.uport.moved .arrow {
+  color: color-mix(in srgb, var(--warn) 70%, var(--muted));
+}
+
+.uport.moved .uport-was {
+  border-left-color: color-mix(in srgb, var(--warn) 40%, var(--border));
+  color: var(--warn);
+}
+
+.uport-was {
+  margin-left: 4px;
+  padding-left: 5px;
+  border-left: 1px solid var(--border);
+  color: var(--faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.unit-actions {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  flex: none;
+  min-width: 120px;
+  justify-content: flex-end;
+}
+
+.unit-actions button,
+.unit-actions a.as-button {
+  padding: 2px 9px;
+  font-size: 11.5px;
+}
+
+/* Open is secondary to the lifecycle button next to it, so it stays quiet
+   until you are actually looking at this row. */
+.row-open {
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+
+.unit-row:hover .row-open,
+.row-open:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .row-open {
+    opacity: 1;
+  }
+}
+
+.card-summary {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--faint);
+}
+
+button.ghost.danger {
+  border-color: transparent;
+  background: transparent;
+  color: var(--bad);
+}
+
+/* ---------- modal ---------- */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 40;
+}
+
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 20px 22px;
+  max-width: 620px;
+  width: 100%;
+  max-height: 85vh;
+  overflow: auto;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+
+.modal h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.modal-sub {
+  margin: 6px 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.conflict-list {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  list-style: none;
+  background: color-mix(in srgb, var(--bad) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--bad) 25%, transparent);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.conflict-list li + li {
+  margin-top: 8px;
+}
+
+.conflict-list code {
+  font-family: var(--mono);
+}
+
+.conflict-cmd {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.choices {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.choice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.choice:has(input:checked) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.choice.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.choice > span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.choice-note {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.port-inputs {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.port-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.port-input input {
+  width: 82px;
+  min-width: 0;
+  padding: 4px 8px;
+  font-family: var(--mono);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
 }
 
 /* ---------- empty / gate ---------- */
@@ -537,3 +837,257 @@ button.ghost:hover:not(:disabled) {
 .toast.bad {
   border-color: color-mix(in srgb, var(--bad) 50%, var(--border));
 }
+
+/* An <a> that has to look and behave exactly like a button, used when the
+   agent has no way to launch the machine's default browser. */
+a.as-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 5px 11px;
+  border-radius: 7px;
+  border: 1px solid var(--border-strong);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+
+a.as-button:hover {
+  background: var(--panel-hover);
+  border-color: var(--accent);
+}
+
+a.row-open.as-button {
+  padding: 2px 8px;
+  font-size: 11.5px;
+}
+
+a.port.as-button {
+  padding: 1px 7px;
+  font-size: 12px;
+  font-family: var(--mono);
+}
+
+/* Branch name in the card header. */
+.card-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--faint);
+  /* No fixed cap. Branch names are long — feature/PROJ-1234-some-description
+     is already 34 characters — and any limit truncates exactly the part that
+     identifies the branch. It shrinks only when the header actually runs out
+     of room, and the summary on the right yields nothing. */
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-branch svg {
+  flex: none;
+}
+
+/* The header must give the branch its room rather than the summary. */
+.card-summary {
+  flex: none;
+}
+
+/* Per-row note: why this row is not simply running. It sits on its own line so
+   the row above stays scannable. */
+.unit-row {
+  flex-wrap: wrap;
+}
+
+.unit-note {
+  flex-basis: 100%;
+  margin-left: 19px;
+  font-size: 11px;
+  color: var(--faint);
+  padding-bottom: 2px;
+}
+
+.unit-note .bad-text {
+  color: var(--bad);
+}
+
+.unit-row.is-substituted .unit-name,
+.unit-row.is-substituted .unit-state {
+  opacity: 0.7;
+}
+
+.uport.substituted {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-style: dashed;
+}
+
+button.tiny {
+  padding: 1px 6px;
+  font-size: 10.5px;
+}
+
+.substitute-select {
+  margin-top: 8px;
+  max-width: 100%;
+  font-size: 12px;
+}
+
+/* ---------- port popover ---------- */
+
+.uport-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+/* The chip is a button now, but must keep reading as a chip. */
+button.uport {
+  cursor: pointer;
+  background: transparent;
+  transition: border-color 0.12s ease;
+}
+
+button.uport:hover {
+  border-color: currentColor;
+}
+
+.port-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  width: 300px;
+  padding: 11px 13px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+  color: var(--text);
+  text-align: left;
+  white-space: normal;
+  cursor: default;
+}
+
+.port-popover.conflict {
+  border-color: color-mix(in srgb, var(--bad) 45%, var(--border-strong));
+}
+
+.pp-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.pp-head strong {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.pp-state {
+  margin-left: auto;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
+.pp-state.conflict {
+  color: var(--bad);
+}
+.pp-state.owned {
+  color: var(--ok);
+}
+.pp-state.unknown-owner {
+  color: var(--warn);
+}
+.pp-state.substituted {
+  color: var(--accent);
+}
+
+.pp-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1px 12px;
+  margin: 0 0 9px;
+  font-size: 11.5px;
+}
+
+.pp-facts dt {
+  color: var(--faint);
+}
+
+.pp-facts dd {
+  margin: 0;
+  font-family: var(--mono);
+}
+
+.pp-message {
+  margin: 0 0 8px;
+  line-height: 1.45;
+}
+
+.pp-command {
+  display: block;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 7px;
+  max-height: 60px;
+  overflow: auto;
+  word-break: break-all;
+}
+
+.pp-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.current-note {
+  margin-top: -8px;
+}
+
+/* A tag beside the unit name, so a customised row is obvious without reading
+   the note under it. */
+.unit-tag {
+  flex: none;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.unit-tag.bad {
+  border-color: color-mix(in srgb, var(--bad) 45%, var(--border));
+  color: var(--bad);
+}
+
+.pp-hint {
+  color: var(--faint);
+  font-family: inherit;
+}
+
+/* A substituted unit is genuinely up — something else is serving it — so the
+   dot is green, ringed in blue to say "not by this project". */
+.dot.substituted {
+  box-shadow:
+    0 0 0 2px var(--panel),
+    0 0 0 3.5px var(--accent),
+    0 0 7px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+

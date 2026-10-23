@@ -38,6 +38,9 @@ cat > "$WORK/bin/docker" <<'STUB'
 # Minimal stand-in for the docker CLI. State lives in $DOCKER_STUB_STATE.
 state="${DOCKER_STUB_STATE:-/tmp/docker-stub-state}"
 project=$(basename "$PWD")
+# Record every invocation so the test can assert on the arguments and the
+# environment the agent passed (port overrides ride in both).
+echo "ARGS: $* | WEB_PORT=${WEB_PORT:-} BLOG_PORT=${BLOG_PORT:-}" >> "$state/calls.log"
 
 args=("$@")
 sub="${args[0]:-}"
@@ -48,7 +51,8 @@ if [ "$sub" = "ps" ]; then
   # Host-side port ownership for running containers, plus one container from an
   # unrelated compose project squatting on 3999.
   if [ -f "$state/shop.up" ]; then
-    echo '{"ID":"c1","Names":"shop-web-1","Ports":"0.0.0.0:3000->80/tcp, :::3000->80/tcp","Labels":"com.docker.compose.project=shop","Image":"nginx"}'
+    webport="${WEB_PORT:-3000}"
+    echo '{"ID":"c1","Names":"shop-web-1","Ports":"0.0.0.0:'"$webport"'->80/tcp, :::'"$webport"'->80/tcp","Labels":"com.docker.compose.project=shop","Image":"nginx"}'
   fi
   echo '{"ID":"c9","Names":"stranger-web-1","Ports":"0.0.0.0:3999->80/tcp","Labels":"com.docker.compose.project=stranger","Image":"nginx"}'
   exit 0
@@ -69,15 +73,26 @@ verb="${args[$i]:-}"
 
 case "$verb" in
   version) echo "2.29.0"; exit 0;;
-  up)      touch "$state/$project.up"; echo "Container ${project}-web-1  Started" >&2; exit 0;;
+  up)      touch "$state/$project.up"
+           # A trailing service name means "only this one".
+           svc="${args[$((i + 1))]:-}"
+           case "$svc" in ""|-*) rm -f "$state/$project".*.down;; *) rm -f "$state/$project.$svc.down";; esac
+           echo "Container ${project}-web-1  Started" >&2; exit 0;;
+  stop)    svc="${args[${#args[@]}-1]}"; touch "$state/$project.$svc.down"
+           echo "Container ${project}-${svc}-1  Stopped" >&2; exit 0;;
   down)    rm -f "$state/$project.up"; echo "Container ${project}-web-1  Removed" >&2; exit 0;;
   restart) echo "Container ${project}-web-1  Restarted" >&2; exit 0;;
   logs)    echo "web-1  | stub log line from $project"; exit 0;;
   ps)
     if [ -f "$state/$project.up" ]; then
       # NDJSON, the format compose v2.21+ emits.
-      echo '{"ID":"c1","Name":"'"$project"'-web-1","Image":"nginx","Service":"web","State":"running","Status":"Up 3 seconds","Health":"","Project":"'"$project"'","Publishers":[{"URL":"0.0.0.0","TargetPort":80,"PublishedPort":3000,"Protocol":"tcp"}]}'
-      echo '{"ID":"c2","Name":"'"$project"'-db-1","Image":"postgres","Service":"db","State":"running","Status":"Up 3 seconds","Health":"healthy","Project":"'"$project"'","Publishers":[{"URL":"0.0.0.0","TargetPort":5432,"PublishedPort":5432,"Protocol":"tcp"}]}'
+      webport="${WEB_PORT:-3000}"
+      webstate=running; webstatus="Up 3 seconds"
+      [ -f "$state/$project.web.down" ] && { webstate=exited; webstatus="Exited (0)"; }
+      dbstate=running
+      [ -f "$state/$project.db.down" ] && dbstate=exited
+      echo '{"ID":"c1","Name":"'"$project"'-web-1","Image":"nginx","Service":"web","State":"'"$webstate"'","Status":"'"$webstatus"'","Health":"","Project":"'"$project"'","Publishers":[{"URL":"0.0.0.0","TargetPort":80,"PublishedPort":'"$webport"',"Protocol":"tcp"},{"URL":"::","TargetPort":80,"PublishedPort":'"$webport"',"Protocol":"tcp"}]}'
+      echo '{"ID":"c2","Name":"'"$project"'-db-1","Image":"postgres","Service":"db","State":"'"$dbstate"'","Status":"Up 3 seconds","Health":"healthy","Project":"'"$project"'","Publishers":[{"URL":"0.0.0.0","TargetPort":5432,"PublishedPort":5432,"Protocol":"tcp"}]}'
     fi
     exit 0;;
 esac
@@ -94,10 +109,13 @@ name: shop
 services:
   web:
     image: nginx
-    ports: ["3000:80"]
+    ports: ["${WEB_PORT:-3000}:80"]
   db:
     image: postgres
     ports: ["5432:5432"]
+  worker:
+    image: alpine
+    command: ["sleep", "60"]
 YAML
 
 # A second project whose port is held by someone else's container.
@@ -130,8 +148,9 @@ sleep 2
 
 TOKEN=$("$BIN" token -state-dir "$WORK/agent")
 api() {
-  local method=$1 path=$2
-  curl -s --noproxy '*' -X "$method" -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT$path"
+  local method=$1 path=$2 body=${3:-'{}'}
+  curl -s --noproxy '*' -X "$method" -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' -d "$body" "http://127.0.0.1:$PORT$path"
 }
 id_of() { api GET /api/projects | jq -r ".projects[]|select(.name==\"$1\")|.id"; }
 
@@ -173,6 +192,97 @@ check "conflict status" "conflict" "$(echo "$BLOG_STATE" | jq -r .state.status)"
 
 check "logs come from containers" "web-1  | stub log line from shop" \
   "$(api GET "/api/projects/$SHOP/logs?tail=5" | jq -r '.lines[0].text')"
+
+# --- new behaviour ---------------------------------------------------------
+
+check "per-container ports are reported" "3000->80" \
+  "$(echo "$AFTER" | jq -r '.state.containers[]|select(.service=="web")|.ports[]|"\(.host)->\(.container)"' | head -1)"
+check "duplicate ipv4/ipv6 publishers are collapsed" "1" \
+  "$(echo "$AFTER" | jq -r '.state.containers[]|select(.service=="web")|.ports|length')"
+check "container carries an open URL" "http://localhost:3000" \
+  "$(echo "$AFTER" | jq -r '.state.containers[]|select(.service=="web")|.url')"
+check "stopped containers get no URL" "" \
+  "$(api GET "/api/projects/$BLOG" | jq -r '[.state.containers[]|select(.url != "")]|length' | sed 's/^0$//')"
+
+# A variable-declared port is movable by setting that variable; a hard-coded
+# one needs the generated !override file.
+check "variable port is movable via the variable" "compose-var" \
+  "$(api GET "/api/projects/$SHOP" | jq -r .portControl.mechanism)"
+check "compose variable name is recorded" "WEB_PORT" \
+  "$(api GET "/api/projects/$SHOP" | jq -r '.ports[]|select(.port==3000)|.variable')"
+check "hard-coded port falls back to an override file" "compose-override" \
+  "$(api GET "/api/projects/$BLOG" | jq -r .portControl.mechanism)"
+
+# Never stop a service the user did not ask about.
+if grep -q -- '--remove-orphans' "$WORK/state/calls.log"; then
+  fail "no implicit orphan removal" "compose was invoked with --remove-orphans"
+else
+  pass "no implicit orphan removal"
+fi
+
+echo "  -- moving shop to port 3100 --"
+api POST "/api/projects/$SHOP/restart" '{"ports":{"3000":3100}}' > /dev/null
+sleep 2
+if grep -q 'WEB_PORT=3100' "$WORK/state/calls.log"; then
+  pass "port override passed as the compose variable"
+else
+  fail "port override passed as the compose variable" \
+    "WEB_PORT=3100 not seen in: $(tail -3 "$WORK/state/calls.log")"
+fi
+MOVED=$(api GET "/api/projects/$SHOP")
+check "moved port is reported"      "3100" "$(echo "$MOVED" | jq -r '.state.ports[]|select(.declared==3000)|.port')"
+check "declared port is remembered" "3000" "$(echo "$MOVED" | jq -r '.state.ports[]|select(.port==3100)|.declared')"
+check "container URL follows the move" "http://localhost:3100" \
+  "$(echo "$MOVED" | jq -r '.state.containers[]|select(.service=="web")|.url')"
+
+api POST "/api/projects/$SHOP/restart" '{"clearOverrides":true}' > /dev/null
+sleep 2
+check "reset returns to the declared port" "3000" \
+  "$(api GET "/api/projects/$SHOP" | jq -r '.state.ports[]|select(.service=="web")|.port')"
+
+# --- units -----------------------------------------------------------------
+
+BEFORE=$(api GET "/api/projects/$BLOG")
+check "units listed before a project is ever started" "web" \
+  "$(echo "$BEFORE" | jq -r '.state.units[].name' | tr '\n' ',' | sed 's/,$//')"
+check "never-started unit reports its state" "not-created" \
+  "$(echo "$BEFORE" | jq -r '.state.units[0].state')"
+check "never-started unit shows its configured port" "3999" \
+  "$(echo "$BEFORE" | jq -r '.state.units[0].ports[0].configured')"
+check "never-started unit has no actual port" "0" \
+  "$(echo "$BEFORE" | jq -r '.state.units[0].ports[0].actual // 0')"
+
+UNITS=$(api GET "/api/projects/$SHOP")
+check "a portless service still gets a row" "worker" \
+  "$(echo "$UNITS" | jq -r '.state.units[]|select(.name=="worker")|.name')"
+check "portless row has no ports" "0" \
+  "$(echo "$UNITS" | jq -r '.state.units[]|select(.name=="worker")|.ports|length')"
+check "running unit reports configured and actual" "3000/3000" \
+  "$(echo "$UNITS" | jq -r '.state.units[]|select(.name=="web")|.ports[0]|"\(.configured)/\(.actual)"')"
+check "running unit carries an open URL" "http://localhost:3000" \
+  "$(echo "$UNITS" | jq -r '.state.units[]|select(.name=="web")|.url')"
+
+echo "  -- killing one service --"
+api POST "/api/projects/$SHOP/units/web/kill" > /dev/null
+sleep 2
+AFTER_KILL=$(api GET "/api/projects/$SHOP")
+check "killed unit is stopped"          "exited"  "$(echo "$AFTER_KILL" | jq -r '.state.units[]|select(.name=="web")|.state')"
+check "its sibling keeps running"       "running" "$(echo "$AFTER_KILL" | jq -r '.state.units[]|select(.name=="db")|.state')"
+check "kill targets one service only"   "1" \
+  "$(grep -c 'ARGS: compose .* stop --timeout 10 web' "$WORK/state/calls.log")"
+if grep -qE 'ARGS: compose .* (down|stop [^-])' "$WORK/state/calls.log" | grep -v ' web'; then
+  fail "kill does not touch the project" "a project-wide command was issued"
+else
+  pass "kill does not touch the project"
+fi
+
+echo "  -- starting that one service back up --"
+api POST "/api/projects/$SHOP/units/web/start" > /dev/null
+sleep 2
+check "restarted unit is running" "running" \
+  "$(api GET "/api/projects/$SHOP" | jq -r '.state.units[]|select(.name=="web")|.state')"
+check "start targets one service with --no-deps" "1" \
+  "$(grep -c 'ARGS: compose .* up --detach --no-deps web' "$WORK/state/calls.log")"
 
 api POST "/api/projects/$SHOP/stop" > /dev/null
 sleep 2

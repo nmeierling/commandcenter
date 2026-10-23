@@ -72,6 +72,18 @@ type Project struct {
 	// ComposeFile overrides which compose file to use.
 	ComposeFile string `yaml:"composeFile"`
 	Disabled    bool   `yaml:"disabled"`
+
+	// PortOverrides maps a declared host port to the one to use instead. The
+	// dashboard writes these when you move a project, and you can edit them by
+	// hand — they live here rather than in agent state so a choice is visible,
+	// reviewable and shareable with the rest of the team.
+	PortOverrides map[int]int `yaml:"portOverrides,omitempty"`
+
+	// Substitutes marks a unit as already provided by something else that is
+	// running: "db: ecommerce/db" means this project's `db` service should not
+	// be started, because ecommerce's `db` satisfies it. The value is
+	// "<project>/<unit>", where project is matched by name and then by ID.
+	Substitutes map[string]string `yaml:"substitutes,omitempty"`
 }
 
 // Health configures the HTTP health probe.

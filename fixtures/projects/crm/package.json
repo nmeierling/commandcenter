@@ -2,6 +2,6 @@
   "name": "crm",
   "private": true,
   "scripts": {
-    "dev": "node server.js --port 4001"
+    "dev": "node server.js"
   }
 }
