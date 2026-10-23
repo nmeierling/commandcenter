@@ -204,6 +204,75 @@ func containerURL(ports []model.ContainerPort, running bool) string {
 	return ""
 }
 
+// Diagnose asks Compose what it actually resolved, for when a command failed in
+// a way that depends on it.
+//
+// "failed to read dockerfile" says nothing about *which* directory Compose was
+// looking in, and that is invariably the answer. `build --print` reports the
+// context and dockerfile per service without building anything; `config` covers
+// projects with no build at all.
+func (c *Client) Diagnose(ctx context.Context, dir, composeFile string, opts Options) string {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	var b strings.Builder
+	b.WriteString("resolved by docker compose:")
+
+	args := c.composeArgs(composeFile, opts.ExtraFiles, "build", "--print")
+	cmd := exec.CommandContext(ctx, c.bin(), args...)
+	cmd.Dir = dir
+	cmd.Env = append(cleanEnv(), opts.Env...)
+	out, err := cmd.Output()
+	if err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			t := strings.TrimSpace(line)
+			if strings.HasPrefix(t, `"context"`) || strings.HasPrefix(t, `"dockerfile"`) ||
+				strings.HasPrefix(t, `"target"`) || strings.HasSuffix(t, `": {`) {
+				b.WriteString("\n    " + t)
+			}
+		}
+		return b.String()
+	}
+
+	// No build section, or an older Compose without --print.
+	args = c.composeArgs(composeFile, opts.ExtraFiles, "config")
+	cmd = exec.CommandContext(ctx, c.bin(), args...)
+	cmd.Dir = dir
+	cmd.Env = append(cleanEnv(), opts.Env...)
+	out, err = cmd.Output()
+	if err != nil {
+		return "could not ask compose what it resolved: " + err.Error()
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "context:") || strings.HasPrefix(t, "dockerfile:") {
+			b.WriteString("\n    " + t)
+		}
+	}
+	return b.String()
+}
+
+// Describe renders the command a lifecycle action will run, for the log.
+// A build that fails on a missing Dockerfile is almost always a question of
+// which files Compose was given, and that is invisible unless it is printed.
+func (c *Client) Describe(dir, composeFile string, opts Options, verb ...string) string {
+	args := c.composeArgs(composeFile, opts.ExtraFiles, verb...)
+	var b strings.Builder
+	for _, e := range opts.Env {
+		b.WriteString(e)
+		b.WriteString(" ")
+	}
+	b.WriteString(c.bin())
+	for _, a := range args {
+		b.WriteString(" ")
+		b.WriteString(a)
+	}
+	b.WriteString("   (in ")
+	b.WriteString(dir)
+	b.WriteString(")")
+	return b.String()
+}
+
 // Options carry per-invocation environment and extra compose files, used when
 // starting a project on a different port.
 type Options struct {

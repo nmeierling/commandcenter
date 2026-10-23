@@ -248,6 +248,17 @@ Per-service compose commands are `up --detach --no-deps <service>` and
 service would also start its dependencies, which is a decision you did not
 make.
 
+Every compose command is echoed into the project's log before it runs, in full:
+
+```
+$ docker compose --file /w/pmd/docker-compose.yml \
+    --file /w/pmd/docker-compose.override.yml --ansi never \
+    up --detach --no-deps backend   (in /w/pmd)
+```
+
+Which files Compose was handed is the answer to most compose failures, and it
+is invisible otherwise.
+
 ### Compose override files
 
 The agent passes `--file` explicitly — it has to, to layer a port override on.

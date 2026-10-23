@@ -962,12 +962,6 @@ func (m *Manager) runComposeAction(ctx context.Context, e *entry, p model.Projec
 	if err != nil {
 		return err
 	}
-	if len(dopts.Env) > 0 {
-		e.logs.Append("agent", "using port override: "+strings.Join(dopts.Env, " "))
-	}
-	if len(dopts.ExtraFiles) > 0 {
-		e.logs.Append("agent", "using generated compose override: "+strings.Join(dopts.ExtraFiles, " "))
-	}
 
 	// Services the user marked as provided elsewhere must not be started by a
 	// project-wide action either, or "Start all" would quietly undo the choice.
@@ -976,6 +970,8 @@ func (m *Manager) runComposeAction(ctx context.Context, e *entry, p model.Projec
 	var out string
 	switch action {
 	case "start":
+		e.logs.Append("agent", "$ "+m.docker.Describe(p.Path, p.ComposeFile, dopts,
+			append([]string{"up", "--detach"}, services...)...))
 		out, err = m.docker.Up(ctx, p.Path, p.ComposeFile, services, dopts)
 	case "stop":
 		out, err = m.docker.Down(ctx, p.Path, p.ComposeFile, dopts)
@@ -995,6 +991,12 @@ func (m *Manager) runComposeAction(ctx context.Context, e *entry, p model.Projec
 	}
 
 	appendLines(e, out)
+	if err != nil {
+		// A failing compose command is usually a question about which files and
+		// directories it was given; answer it in the log rather than leaving the
+		// user to reconstruct the invocation.
+		appendLines(e, m.docker.Diagnose(ctx, p.Path, p.ComposeFile, dopts))
+	}
 	return err
 }
 

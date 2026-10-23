@@ -113,13 +113,23 @@ func (m *Manager) runComposeUnitAction(ctx context.Context, e *entry, p model.Pr
 	var out string
 	switch action {
 	case "start":
+		e.logs.Append("agent", "$ "+m.docker.Describe(p.Path, p.ComposeFile, dopts,
+			"up", "--detach", "--no-deps", unit.ID))
 		out, err = m.docker.UpService(ctx, p.Path, p.ComposeFile, unit.ID, dopts)
 	case "kill":
+		e.logs.Append("agent", "$ "+m.docker.Describe(p.Path, p.ComposeFile, dopts,
+			"stop", "--timeout", "10", unit.ID))
 		out, err = m.docker.StopService(ctx, p.Path, p.ComposeFile, unit.ID, 10, dopts)
 	default:
 		return fmt.Errorf("unknown unit action %q", action)
 	}
 	appendLines(e, out)
+	if err != nil {
+		// A failing compose command is usually a question about which files and
+		// directories it was given; answer it in the log rather than leaving the
+		// user to reconstruct the invocation.
+		appendLines(e, m.docker.Diagnose(ctx, p.Path, p.ComposeFile, dopts))
+	}
 	return err
 }
 
