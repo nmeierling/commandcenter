@@ -11,3 +11,6 @@ agent/internal/webui/dist/*
 # Local state written by the agent at runtime
 *.log
 .DS_Store
+
+# Scratch notes while working on a feature; never part of a commit.
+TEMP.md

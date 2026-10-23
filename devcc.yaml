@@ -12,13 +12,11 @@
 # ---------------------------------------------------------------------------
 scan:
   roots:
-    - ~/Documents/private
-    - ~/Documents/mbti
+    # Relative paths are resolved against this file, not your shell's cwd:
+    - ./fixtures/projects
 
     # - ~/work
     # - ~/src/github.com/acme
-    # Relative paths are resolved against this file, not your shell's cwd:
-    # - ./fixtures/projects
 
   # How many directory levels below each root to search. depth: 1 means "the
   # immediate children of each root". Scanning stops as soon as a directory is
