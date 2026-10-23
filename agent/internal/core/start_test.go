@@ -226,3 +226,58 @@ func TestConflictIsReturnedRatherThanResolved(t *testing.T) {
 		t.Error("expected a suggested alternative port")
 	}
 }
+
+// The bug this guards: passing -f turns off Compose's automatic loading of the
+// override sibling, so a project whose build context lives there fails with
+// "failed to read dockerfile". Every compose invocation must carry the chain,
+// with or without a port override, and for reads as well as writes.
+func TestComposeOptionsAlwaysCarryTheProjectsOwnFiles(t *testing.T) {
+	m := newManager(t)
+	p := model.Project{
+		ID:                "p1",
+		Runtime:           model.RuntimeCompose,
+		ComposeFile:       "/proj/docker-compose.yml",
+		ComposeExtraFiles: []string{"/proj/docker-compose.override.yml"},
+		Ports:             []model.Port{{Port: 8080, Service: "backend", ContainerPort: 8080}},
+	}
+
+	// No port override at all.
+	opts, err := m.composeOptions(p, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(opts.ExtraFiles) != 1 || opts.ExtraFiles[0] != "/proj/docker-compose.override.yml" {
+		t.Errorf("without an override: ExtraFiles = %v", opts.ExtraFiles)
+	}
+
+	// Read-only commands (ps, logs) must see the same project definition.
+	if got := m.composeReadOptions(p); len(got.ExtraFiles) != 1 {
+		t.Errorf("read options dropped the chain: %v", got.ExtraFiles)
+	}
+
+	// With a generated port override, the project's own file still comes first
+	// so the agent's !override wins.
+	m.mu.Lock()
+	m.portOverrides["p1"] = map[int]int{8080: 8082}
+	m.mu.Unlock()
+	opts, err = m.composeOptions(p, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(opts.ExtraFiles) != 2 {
+		t.Fatalf("ExtraFiles = %v, want the sibling then the generated file", opts.ExtraFiles)
+	}
+	if opts.ExtraFiles[0] != "/proj/docker-compose.override.yml" {
+		t.Errorf("the project's own override must come first, got %v", opts.ExtraFiles)
+	}
+}
+
+func TestExplicitComposeFileDoesNotPullInASibling(t *testing.T) {
+	// Naming a file in the config is the equivalent of `docker compose -f x`,
+	// which does not load an override sibling either.
+	p := model.Project{Runtime: model.RuntimeCompose, ComposeExtraFiles: []string{"/proj/override.yml"}}
+	applyOverrides(&p, config.Project{ComposeFile: "/proj/other.yml"})
+	if len(p.ComposeExtraFiles) != 0 {
+		t.Errorf("ComposeExtraFiles = %v, want none", p.ComposeExtraFiles)
+	}
+}

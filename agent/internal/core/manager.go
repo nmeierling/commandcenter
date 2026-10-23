@@ -229,6 +229,9 @@ func applyOverrides(p *model.Project, cp config.Project) {
 	}
 	if cp.ComposeFile != "" {
 		p.ComposeFile = cp.ComposeFile
+		// Naming a file explicitly is the equivalent of `docker compose -f x`,
+		// which does not pull in an override sibling either.
+		p.ComposeExtraFiles = nil
 		p.Runtime = model.RuntimeCompose
 	}
 	if cp.Start != "" {

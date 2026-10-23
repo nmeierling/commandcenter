@@ -198,9 +198,14 @@ func (m *Manager) composeReadOptions(p model.Project) dockercli.Options {
 }
 
 func (m *Manager) composeOptions(p model.Project, generate bool) (dockercli.Options, error) {
+	// The project's own override sibling comes first, so anything the agent
+	// generates still wins, and every command — ps and logs included — sees the
+	// same project definition the developer would get by hand.
+	base := append([]string{}, p.ComposeExtraFiles...)
+
 	overrides := m.portOverridesFor(p.ID)
 	if len(overrides) == 0 {
-		return dockercli.Options{}, nil
+		return dockercli.Options{ExtraFiles: base}, nil
 	}
 
 	// Preferred mechanism: the compose file already declares the port through a
@@ -224,7 +229,7 @@ func (m *Manager) composeOptions(p model.Project, generate bool) (dockercli.Opti
 	sort.Strings(env)
 
 	if len(remaining) == 0 {
-		return dockercli.Options{Env: env}, nil
+		return dockercli.Options{Env: env, ExtraFiles: base}, nil
 	}
 
 	// Fallback: an agent-owned override file using `!override`. A plain
@@ -235,9 +240,9 @@ func (m *Manager) composeOptions(p model.Project, generate bool) (dockercli.Opti
 		// write during a status refresh.
 		path := filepath.Join(m.stateDir, "compose-overrides", p.ID+".yaml")
 		if _, err := os.Stat(path); err == nil {
-			return dockercli.Options{Env: env, ExtraFiles: []string{path}}, nil
+			return dockercli.Options{Env: env, ExtraFiles: append(base, path)}, nil
 		}
-		return dockercli.Options{Env: env}, nil
+		return dockercli.Options{Env: env, ExtraFiles: base}, nil
 	}
 	if !m.docker.SupportsOverrideTag() {
 		_, version, _ := m.docker.Available()
@@ -250,7 +255,7 @@ func (m *Manager) composeOptions(p model.Project, generate bool) (dockercli.Opti
 	if err != nil {
 		return dockercli.Options{}, err
 	}
-	return dockercli.Options{Env: env, ExtraFiles: []string{path}}, nil
+	return dockercli.Options{Env: env, ExtraFiles: append(base, path)}, nil
 }
 
 func firstKey(m map[int]int) int {

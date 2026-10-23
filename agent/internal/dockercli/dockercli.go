@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -485,6 +486,16 @@ func (c *Client) composeArgs(composeFile string, extraFiles []string, rest ...st
 	args := []string{"compose"}
 	if composeFile != "" {
 		args = append(args, "--file", composeFile)
+		// Pin the base directory for every relative path in the project —
+		// build contexts, env_file, volumes.
+		//
+		// Compose normally infers it from the first --file, but the agent adds
+		// a generated override from its cache directory, and how a given
+		// Compose version combines several -f files from different directories
+		// is exactly the sort of thing that changes between releases. Stating
+		// it removes the question: it is always the directory holding the
+		// project's own compose file, which is what you get by hand.
+		args = append(args, "--project-directory", filepath.Dir(composeFile))
 	}
 	// Extra files are layered after the project's own, which is how a port
 	// override takes effect without touching anything inside the repository.

@@ -254,3 +254,27 @@ func TestComposeProjectNameMatchesDockerDefault(t *testing.T) {
 		}
 	}
 }
+
+func TestComposeOverrideSiblingIsDiscovered(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "docker-compose.yml", "services:\n  web:\n    build: .\n")
+	// A project that keeps its build context in the override file builds the
+	// wrong thing unless this file is carried along.
+	write(t, dir, "docker-compose.override.yml", "services:\n  web:\n    build:\n      context: ./web\n")
+
+	p, ok := Inspect(dir, nil)
+	if !ok {
+		t.Fatal("not detected")
+	}
+	if len(p.ComposeExtraFiles) != 1 ||
+		filepath.Base(p.ComposeExtraFiles[0]) != "docker-compose.override.yml" {
+		t.Errorf("ComposeExtraFiles = %v", p.ComposeExtraFiles)
+	}
+
+	// No sibling, nothing extra.
+	plain := t.TempDir()
+	write(t, plain, "compose.yaml", "services: {}")
+	if q, _ := Inspect(plain, nil); len(q.ComposeExtraFiles) != 0 {
+		t.Errorf("expected none, got %v", q.ComposeExtraFiles)
+	}
+}

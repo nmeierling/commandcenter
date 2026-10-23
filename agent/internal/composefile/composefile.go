@@ -21,9 +21,31 @@ var Names = []string{
 	"docker-compose.yaml", "docker-compose.yml",
 }
 
+// OverrideNames are the files Compose loads automatically alongside the base
+// file, in precedence order.
+var OverrideNames = []string{
+	"compose.override.yaml", "compose.override.yml",
+	"docker-compose.override.yaml", "docker-compose.override.yml",
+}
+
 // Find returns the compose file in dir, or "" if there is none.
 func Find(dir string) string {
-	for _, name := range Names {
+	return firstExisting(dir, Names)
+}
+
+// FindOverride returns the conventional override file in dir, or "".
+//
+// This matters more than it looks. Running `docker compose up` with no -f loads
+// the base file *and* its override sibling; passing -f suppresses that. Since
+// the agent always passes -f — it has to, to add a port override file — it must
+// re-supply the sibling explicitly, or a project that keeps its build context
+// in docker-compose.override.yml silently builds the wrong thing.
+func FindOverride(dir string) string {
+	return firstExisting(dir, OverrideNames)
+}
+
+func firstExisting(dir string, names []string) string {
+	for _, name := range names {
 		p := filepath.Join(dir, name)
 		if st, err := os.Stat(p); err == nil && !st.IsDir() {
 			return p

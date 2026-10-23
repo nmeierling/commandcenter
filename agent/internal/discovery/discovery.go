@@ -185,6 +185,9 @@ func applyCompose(p *model.Project, dir string) {
 	p.Kind = model.KindCompose
 	p.Runtime = model.RuntimeCompose
 	p.ComposeFile = composefile.Find(dir)
+	if override := composefile.FindOverride(dir); override != "" {
+		p.ComposeExtraFiles = []string{override}
+	}
 	p.ComposeProject = composeProjectName(dir)
 
 	if p.ComposeFile == "" {

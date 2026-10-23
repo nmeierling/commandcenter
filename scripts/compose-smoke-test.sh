@@ -64,7 +64,7 @@ if [ "$sub" != "compose" ]; then exit 0; fi
 i=1
 while [ $i -lt ${#args[@]} ]; do
   case "${args[$i]}" in
-    --file|-f|--project-name|-p|--ansi) i=$((i + 2));;
+    --file|-f|--project-name|-p|--ansi|--project-directory) i=$((i + 2));;
     -*) i=$((i + 1));;
     *) break;;
   esac
@@ -116,6 +116,15 @@ services:
   worker:
     image: alpine
     command: ["sleep", "60"]
+YAML
+
+# Most real projects keep something in an override sibling. Compose loads it
+# automatically only when no -f is passed, and the agent always passes -f.
+cat > "$WORK/projects/shop/compose.override.yaml" <<'YAML'
+services:
+  web:
+    environment:
+      FROM_OVERRIDE: "yes"
 YAML
 
 # A second project whose port is held by someone else's container.
@@ -212,6 +221,25 @@ check "compose variable name is recorded" "WEB_PORT" \
   "$(api GET "/api/projects/$SHOP" | jq -r '.ports[]|select(.port==3000)|.variable')"
 check "hard-coded port falls back to an override file" "compose-override" \
   "$(api GET "/api/projects/$BLOG" | jq -r .portControl.mechanism)"
+
+# Compose would load the override sibling itself if we did not pass -f; since
+# we always do, it has to be supplied explicitly or the project silently builds
+# and runs a different definition than `docker compose up` would.
+# The base directory is stated rather than inferred, so a generated override
+# from the cache directory cannot shift it on any Compose version.
+if grep -q -- "--project-directory $WORK/projects/shop" "$WORK/state/calls.log"; then
+  pass "the project directory is pinned explicitly"
+else
+  fail "the project directory is pinned explicitly" \
+    "not seen in: $(grep -m1 ' up ' "$WORK/state/calls.log")"
+fi
+
+if grep -q 'compose.override.yaml' "$WORK/state/calls.log"; then
+  pass "the project's own override file is passed through"
+else
+  fail "the project's own override file is passed through" \
+    "compose.override.yaml never appeared in: $(grep -m1 ' up ' "$WORK/state/calls.log")"
+fi
 
 # Never stop a service the user did not ask about.
 if grep -q -- '--remove-orphans' "$WORK/state/calls.log"; then

@@ -248,6 +248,20 @@ Per-service compose commands are `up --detach --no-deps <service>` and
 service would also start its dependencies, which is a decision you did not
 make.
 
+### Compose override files
+
+The agent passes `--file` explicitly — it has to, to layer a port override on.
+That switches off Compose's *automatic* loading of `compose.override.yaml` /
+`docker-compose.override.yml`, so the agent finds that sibling and passes it too.
+Without it, a project that keeps its build context in the override file builds
+something different from what `docker compose up` builds, and fails with
+`failed to read dockerfile`. The order is always: base file, your override
+sibling, then anything the agent generates.
+
+Naming a file explicitly with `composeFile:` in the config is the equivalent of
+`docker compose -f x`, which does not pull in a sibling either — so the agent
+does not add one in that case.
+
 ## Port conflicts
 
 Starting something whose port is taken does not fail and does not guess. The

@@ -214,3 +214,24 @@ services:
 		}
 	}
 }
+
+// Compose loads an override sibling automatically, but only when no -f is
+// passed. The agent always passes -f, so it has to find the sibling itself.
+func TestFindOverride(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "docker-compose.yml", "services: {}")
+	if got := FindOverride(dir); got != "" {
+		t.Errorf("no override present, got %q", got)
+	}
+
+	writeFile(t, dir, "docker-compose.override.yml", "services: {}")
+	if got := FindOverride(dir); filepath.Base(got) != "docker-compose.override.yml" {
+		t.Errorf("FindOverride = %q", got)
+	}
+
+	// The modern name wins, matching Compose's own precedence.
+	writeFile(t, dir, "compose.override.yaml", "services: {}")
+	if got := FindOverride(dir); filepath.Base(got) != "compose.override.yaml" {
+		t.Errorf("compose.override.yaml should win, got %q", got)
+	}
+}

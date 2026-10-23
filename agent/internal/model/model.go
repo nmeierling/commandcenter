@@ -279,8 +279,12 @@ type Project struct {
 	Env          map[string]string `json:"-"`
 
 	// ComposeFile is the compose file path for RuntimeCompose projects.
-	ComposeFile    string `json:"composeFile,omitempty"`
-	ComposeProject string `json:"composeProject,omitempty"`
+	ComposeFile string `json:"composeFile,omitempty"`
+	// ComposeExtraFiles are the files Compose would have loaded on its own —
+	// the override sibling. They have to be passed explicitly because passing
+	// any -f turns Compose's automatic discovery off.
+	ComposeExtraFiles []string `json:"composeExtraFiles,omitempty"`
+	ComposeProject    string   `json:"composeProject,omitempty"`
 
 	Ports  []Port       `json:"ports"`
 	URLs   []string     `json:"urls"`
@@ -292,6 +296,8 @@ type Project struct {
 	Services []string `json:"services,omitempty"`
 	// Branch is the checked-out git branch, or a short commit when detached.
 	Branch string `json:"branch,omitempty"`
+	// Categories are the dashboard tabs this project appears under.
+	Categories []string `json:"categories"`
 
 	Disabled bool `json:"disabled,omitempty"`
 }
